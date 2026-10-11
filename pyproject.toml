@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bom-change-assistant"
+version = "0.1.0"
+description = "本地、匿名、可追溯的 BOM 工程变更影响分析助手"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+bom-change-assistant = "bom_change_assistant.web:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bom_change_assistant = ["web_assets/*"]
