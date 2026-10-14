@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BOM 工程变更影响分析助手</title>
+  <link rel="stylesheet" href="/styles.css?v=20260804-apple">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="presentation">
+            <path d="M7 4.5h7.3a3.7 3.7 0 0 1 0 7.4H7z" />
+            <path d="M7 11.9h8.1a3.8 3.8 0 0 1 0 7.6H7z" />
+          </svg>
+        </div>
+        <div>
+          <strong>BOM Impact</strong>
+          <span>工程变更分析助手</span>
+        </div>
+      </div>
+
+      <nav aria-label="主导航">
+        <button class="nav-item active" data-view="import">
+          <span class="nav-index">01</span><span>数据准备</span>
+        </button>
+        <button class="nav-item" data-view="draft">
+          <span class="nav-index">02</span><span>变更登记</span>
+        </button>
+        <button class="nav-item" data-view="analysis">
+          <span class="nav-index">03</span><span>影响核查</span>
+        </button>
+        <button class="nav-item" data-view="report">
+          <span class="nav-index">04</span><span>核查报告</span>
+        </button>
+      </nav>
+
+      <div class="privacy-card">
+        <div class="privacy-dot"></div>
+        <div>
+          <strong>敏感信息脱敏模式</strong>
+          <span>业务编号保留 · 描述与企业名称显示 XXX</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">工程变更影响核查</p>
+          <h1 id="page-title">数据准备</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="status-pill"><i></i><span id="snapshot-state">等待导入</span></span>
+          <span class="mode-pill">仅核查 · 不修改 ERP</span>
+        </div>
+      </header>
+
+      <section class="view active" id="view-import">
+        <div class="hero-grid">
+          <article class="panel upload-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="kicker">核查数据准备</p>
+                <h2>导入本次核查数据</h2>
+                <p>请选择从 ERP 导出的 BOM、订单、变更记录及物料主数据。物料号、订单号等业务编号用于关联核查；名称和描述将在本机脱敏处理。</p>
+              </div>
+              <span class="step-chip">第 1 步</span>
+            </div>
+
+            <div class="drop-zone" id="drop-zone">
+              <input type="file" id="file-input" accept=".xlsx" multiple hidden>
+              <div class="upload-icon">↥</div>
+              <h3>选择或拖入 Excel 文件</h3>
+              <p>建议同时导入：多层 BOM、销售/生产订单、变更记录和物料主数据</p>
+              <button class="button secondary" id="choose-files">选择文件</button>
+              <span id="file-count">尚未选择文件</span>
+            </div>
+
+            <div class="action-row">
+              <button class="button primary" id="import-files" disabled>导入所选数据</button>
+              <a class="button secondary" href="/api/import-template.xlsx" download>下载导入模板</a>
+              <button class="button ghost" id="load-demo">载入虚拟演示数据</button>
+            </div>
+            <div class="progress-wrap hidden" id="import-progress">
+              <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+              <span id="progress-label">准备导入</span>
+            </div>
+          </article>
+
+          <article class="panel guide-panel">
+            <p class="kicker">数据使用说明</p>
+            <h2>导入与脱敏说明</h2>
+            <ul class="policy-list">
+              <li><span>保留</span>物料号、订单号、工厂代码、父子关系、用量和日期</li>
+              <li><span>脱敏</span>物料描述、企业名、供应商名和人员名统一显示为 XXX</li>
+              <li><span>留痕</span>本次变更填写的内部编号与核查版本仅保存在本机</li>
+              <li><span>不保存</span>企业名、人员名、描述、供应商名称和原始文件名</li>
+              <li><span>删除</span>解析结束后立即移除临时文件</li>
+              <li><span>虚拟数据</span>计划备料 Excel 仅用于演示库存、在途和 Open PO 判断，不代表 ERP 实时余额</li>
+            </ul>
+            <div class="callout">
+              <strong>核查范围</strong>
+              <p>展开 BOM 用于核查物料使用关系；MARA、MARC、销售视图和来源清单用于核对新组件的物料主数据和供应准备情况。</p>
+            </div>
+          </article>
+        </div>
+
+        <div class="metric-grid six import-metrics" id="snapshot-metrics">
+          <article class="metric"><span>可用 BOM 明细行</span><strong id="m-valid-rows">0</strong><small id="m-row-note">纳入核查</small></article>
+          <article class="metric"><span>顶层成品</span><strong id="m-tops">0</strong><small>纳入核查的成品</small></article>
+          <article class="metric"><span>BOM 数据版本</span><strong id="m-versions">0</strong><small id="m-version-note">按数据来源区分</small></article>
+          <article class="metric"><span>组件料号数</span><strong id="m-components">0</strong><small>可按料号查询</small></article>
+          <article class="metric"><span>BOM 最深层级</span><strong id="m-level">0</strong><small>已导入结构的最大层级</small></article>
+          <article class="metric"><span>未纳入行</span><strong id="m-excluded">0</strong><small>日期异常未纳入核查</small></article>
+        </div>
+
+        <article class="panel">
+          <div class="panel-heading compact">
+            <div>
+              <p class="kicker">已导入 BOM 范围</p>
+              <h2>顶层成品与数据版本</h2>
+              <p>同一顶层成品出现在不同数据来源时分别列示，便于发现重复数据或多个版本。</p>
+            </div>
+            <span class="muted" id="bom-version-summary">尚未导入</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>顶层成品</th><th>物料号</th><th>数据版本</th><th>可用明细行</th><th>最大层级</th><th>来源编号</th></tr></thead>
+              <tbody id="bom-version-table"><tr><td colspan="6" class="empty">导入后在此显示 BOM 核查范围</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading compact">
+            <div><p class="kicker">导入明细</p><h2>导入数据清单</h2></div>
+            <span class="muted" id="source-summary">尚未导入</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>来源编号</th><th>数据类别</th><th>原始行数</th><th>有效记录</th><th>待处理问题</th></tr></thead>
+              <tbody id="source-table"><tr><td colspan="5" class="empty">导入后在此显示数据统计</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="view" id="view-draft">
+        <div class="content-grid">
+          <article class="panel form-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="kicker">变更登记</p>
+                <h2>登记 BOM 变更</h2>
+                <p>按实际物料号填写变更内容。一次可登记多个变更项目，系统为每项分配内部 ECN 参考号，并按核查版本汇总结果。</p>
+              </div>
+              <span class="step-chip">第 2 步</span>
+            </div>
+
+            <form id="change-form">
+              <fieldset>
+                <legend>变更类型</legend>
+                <div class="choice-grid five">
+                  <label class="choice"><input type="radio" name="change_type" value="replace" checked><span>替换组件<small>A → B</small></span></label>
+                  <label class="choice"><input type="radio" name="change_type" value="remove"><span>删除组件<small>移除使用</small></span></label>
+                  <label class="choice"><input type="radio" name="change_type" value="add"><span>新增组件<small>加入父件</small></span></label>
+                  <label class="choice"><input type="radio" name="change_type" value="quantity"><span>修改用量<small>数量调整</small></span></label>
+                  <label class="choice"><input type="radio" name="change_type" value="effectivity"><span>改变生效日期<small>日期切换</small></span></label>
+                </div>
+              </fieldset>
+
+              <div class="dual-analysis-note">
+                <span>默认核查范围</span>
+                <p>每项变更均核查使用该物料的顶层成品，并展开其全部下层物料，无需另选方向。</p>
+              </div>
+
+              <div class="field-grid">
+                <label>ECN 参考号
+                  <input id="ecn" readonly aria-readonly="true" placeholder="系统自动生成" autocomplete="off">
+                  <small>本工具内部归集编号，不替代 ERP/PLM 中的正式 ECN</small>
+                </label>
+                <label>核查版本
+                  <input id="bom-version" maxlength="10" pattern="BOM-[0-9]{6}" placeholder="BOM-000001" autocomplete="off" required>
+                  <small>用于汇总本次核查，不替代 ERP/PLM 中的正式 BOM 版本</small>
+                </label>
+                <label id="old-component-field">原组件物料号
+                  <input id="old-component" list="material-options" placeholder="输入或选择源数据中的物料号" autocomplete="off">
+                </label>
+                <label id="target-parent-field" class="hidden">目标父件物料号
+                  <input id="target-parent" list="material-options" placeholder="输入或选择源数据中的父件物料号" autocomplete="off">
+                </label>
+                <label id="new-component-field">新组件物料号
+                  <input id="new-component" placeholder="输入替换或新增的物料号" autocomplete="off">
+                </label>
+                <label>计划生效日期
+                  <input id="effective-date" type="date">
+                </label>
+                <label id="old-effective-date-field" class="hidden">原生效日期
+                  <input id="old-effective-date" type="date" readonly aria-readonly="true">
+                  <select id="old-effective-date-options" class="hidden" aria-label="选择原组件生效日期"></select>
+                  <small id="old-effective-date-hint">输入原组件物料号后自动带出</small>
+                </label>
+                <label id="new-effective-date-field" class="hidden">新生效日期
+                  <input id="new-effective-date" type="date">
+                </label>
+                <label id="old-quantity-field" class="hidden">原用量
+                  <input id="old-quantity" type="number" step="any" min="0">
+                </label>
+                <label id="new-quantity-field" class="hidden">新用量
+                  <input id="new-quantity" type="number" step="any" min="0">
+                </label>
+              </div>
+              <datalist id="material-options"></datalist>
+              <label>备注
+                <textarea id="change-note" rows="3" maxlength="500" placeholder="可选：用途、范围或待确认事项"></textarea>
+              </label>
+              <details class="supplement-panel">
+                <summary>
+                  <span>切换补充信息（可选）</span>
+                  <small>用于物料+工厂+库位的计划情景测算</small>
+                </summary>
+                <div class="supplement-section">
+                  <div>
+                    <p class="kicker">计划与备料</p>
+                    <h3>按物料+工厂+库位补充数量</h3>
+                  </div>
+                  <div class="field-grid supplement-grid">
+                    <label>旧料现有库存
+                      <input id="old-on-hand" type="number" min="0" step="any" placeholder="可选">
+                    </label>
+                    <label>旧料在途
+                      <input id="old-in-transit" type="number" min="0" step="any" placeholder="可选">
+                    </label>
+                    <label>旧料 Open PO
+                      <input id="old-open-po" type="number" min="0" step="any" placeholder="可选">
+                    </label>
+                    <label>切换前旧料可消耗需求
+                      <input id="old-consumable-demand" type="number" min="0" step="any" placeholder="可选">
+                    </label>
+                    <label>新料现有库存
+                      <input id="new-on-hand" type="number" min="0" step="any" placeholder="可选">
+                    </label>
+                    <label>新料在途
+                      <input id="new-in-transit" type="number" min="0" step="any" placeholder="可选">
+                    </label>
+                    <label>新料 Open PO
+                      <input id="new-open-po" type="number" min="0" step="any" placeholder="可选">
+                    </label>
+                    <label>切换后新料需求
+                      <input id="new-required-demand" type="number" min="0" step="any" placeholder="可选">
+                    </label>
+                    <label>计划工厂（可选）
+                      <input id="planning-plant" type="text" maxlength="40" placeholder="如 DEMO-PLANT">
+                    </label>
+                    <label>库存库位（可选）
+                      <input id="storage-location" type="text" maxlength="40" placeholder="当前数据未提供时留空">
+                    </label>
+                  </div>
+                </div>
+              </details>
+              <div class="form-footer">
+                <p><span class="lock">●</span> 影响范围依据已导入的 BOM 使用关系和预设核查规则确定</p>
+                <div class="action-row">
+                  <button class="button secondary" type="submit">加入本次变更</button>
+                  <button class="button primary" type="button" id="analyze-draft" disabled>开始影响核查 →</button>
+                </div>
+              </div>
+            </form>
+            <div class="draft-queue">
+              <div class="panel-heading compact">
+                <div><p class="kicker">本次变更</p><h3>待核查变更项目</h3></div>
+                <span class="muted" id="draft-item-count">0 项</span>
+              </div>
+              <div id="draft-item-list"><p class="empty">逐项填写变更内容后加入本次核查</p></div>
+            </div>
+          </article>
+
+          <aside class="panel side-note">
+            <p class="kicker">核查范围</p>
+            <h2>本次核查内容</h2>
+            <ol class="answer-list">
+              <li><b>01</b><span>使用该物料的直接父件、全部上层物料和顶层成品</span></li>
+              <li><b>02</b><span>该物料包含的直接下层物料、全部下层物料和末端物料</span></li>
+              <li><b>03</b><span>生效日期、替代组和待补数据</span></li>
+              <li><b>04</b><span>逐项保留 ECN 参考号，按核查版本汇总结果和报告</span></li>
+            </ol>
+            <div class="boundary-note">
+              <strong>需另行确认</strong>
+              <p>以下事项需在 ERP 或正式审批流程中确认：BOM 发布、变更审批、替代料选择、投料状态、库存与成本影响。</p>
+            </div>
+          </aside>
+        </div>
+
+        <article class="panel change-log-panel">
+          <div class="panel-heading compact">
+            <div>
+              <p class="kicker">历史记录</p>
+              <h2>核查记录</h2>
+              <p>每个变更项目独立保留 ECN 参考号、核查版本、关联范围和物料准备状态。</p>
+            </div>
+            <span class="muted" id="change-log-count">0 条</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>时间</th><th>核查批次 / ECN 参考号</th><th>核查版本</th><th>变更项目</th><th>对象</th><th>关联路径</th><th>物料准备</th><th>关注等级</th></tr></thead>
+              <tbody id="change-log-table"><tr><td colspan="8" class="empty">尚无变更日志</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="view" id="view-analysis">
+        <div id="analysis-empty" class="empty-state panel">
+          <span>03</span>
+          <h2>尚未完成影响核查</h2>
+          <p>请先导入数据并登记变更内容。</p>
+          <button class="button secondary" data-jump="draft">前往变更登记</button>
+        </div>
+
+        <div id="analysis-result" class="hidden">
+          <div id="batch-switcher" class="batch-switcher hidden"></div>
+          <div class="result-head">
+            <div>
+              <p class="kicker">核查结果</p>
+              <h2 id="result-title">影响核查结果</h2>
+              <p id="result-summary"></p>
+            </div>
+            <div class="risk-badge" id="risk-badge"><span>关注等级</span><strong>—</strong></div>
+          </div>
+
+          <div class="direction-overview">
+            <article class="direction-card upstream">
+              <div><span>涉及成品</span><strong>成品及上层物料</strong><small>顶层成品 ↓ 变更料号</small></div>
+              <dl>
+                <div><dt>直接父件</dt><dd id="r-up-direct">0</dd></div>
+                <div><dt>全部上层物料</dt><dd id="r-up-all">0</dd></div>
+                <div><dt>关联路径</dt><dd id="r-up-paths">0</dd></div>
+              </dl>
+            </article>
+            <article class="direction-card downstream">
+              <div><span>涉及物料</span><strong>包含的下层物料</strong><small>变更料号 → 末端物料</small></div>
+              <dl>
+                <div><dt>直接下层物料</dt><dd id="r-down-direct">0</dd></div>
+                <div><dt>全部下层物料</dt><dd id="r-down-all">0</dd></div>
+                <div><dt>展开路径</dt><dd id="r-down-paths">0</dd></div>
+              </dl>
+            </article>
+          </div>
+
+          <div class="metric-grid three">
+            <article class="metric"><span>涉及顶层成品</span><strong id="r-tops">0</strong></article>
+            <article class="metric"><span>关联销售订单行</span><strong id="r-sales">0</strong></article>
+            <article class="metric"><span>关联生产订单</span><strong id="r-production">0</strong></article>
+          </div>
+
+          <div class="analysis-grid">
+            <article class="panel">
+              <div class="panel-heading compact">
+                <div><p class="kicker">BOM 使用关系</p><h2>BOM 使用关系与关联范围</h2><p class="direction-note">高亮变更料号及其关联使用路径</p></div>
+              </div>
+              <section class="path-direction-section">
+                <div class="path-direction-head"><strong>涉及成品与上层物料 · 顶层成品 → 各级父件 → 变更料号</strong><span id="upstream-path-count">0 条</span></div>
+                <div id="upstream-path-list" class="bom-tree-host"></div>
+              </section>
+              <section class="path-direction-section">
+                <div class="path-direction-head"><strong>涉及下层物料 · 变更料号 → 末端物料</strong><span id="downstream-path-count">0 条</span></div>
+                <div id="downstream-path-list" class="bom-tree-host"></div>
+              </section>
+            </article>
+            <article class="panel">
+              <div class="panel-heading compact">
+                <div><p class="kicker">重点关注事项</p><h2>重点关注原因</h2></div>
+              </div>
+              <ul id="risk-reasons" class="reason-list"></ul>
+              <div class="top-materials"><span>涉及顶层成品</span><div id="top-tags"></div></div>
+              <div class="material-validation" id="material-validation"></div>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="tab-row">
+              <button class="tab active" data-tab="planning">计划与备料</button>
+              <button class="tab" data-tab="manufacturing">制造执行</button>
+              <button class="tab" data-tab="production">生产订单</button>
+              <button class="tab" data-tab="sales">销售订单</button>
+              <button class="tab" data-tab="warnings">待确认事项</button>
+            </div>
+            <div id="tab-planning" class="tab-panel active"></div>
+            <div id="tab-manufacturing" class="tab-panel"></div>
+            <div id="tab-production" class="tab-panel"></div>
+            <div id="tab-sales" class="tab-panel"></div>
+            <div id="tab-warnings" class="tab-panel"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-report">
+        <div id="report-empty" class="empty-state panel">
+          <span>04</span>
+          <h2>核查报告等待生成</h2>
+          <p>完成一次影响核查后，系统会生成包含数据依据和待确认事项的脱敏报告。</p>
+        </div>
+        <div id="report-result" class="hidden">
+          <div class="result-head">
+            <div><p class="kicker">核查报告</p><h2>工程变更影响核查报告</h2><p>报告根据当前核查结果生成；保留业务编号，敏感名称统一显示为 XXX。</p></div>
+            <div class="action-row">
+              <button class="button secondary hidden" id="ai-explain">生成补充说明（可选）</button>
+              <a class="button primary" id="report-download" href="/api/report.md" download>下载报告（Markdown）</a>
+            </div>
+          </div>
+          <div class="ai-status hidden" id="ai-status"></div>
+          <article class="report-paper" id="report-content"></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js?v=20260804-apple"></script>
+</body>
+</html>
