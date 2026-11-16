@@ -167,6 +167,25 @@ def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
         "",
     ]
     lines.extend(f"- {_business_text(reason)}" for reason in risk["reasons"])
+    checks = result.get("change_checks") or [result]
+    for checked in checks:
+        prefix = f"{checked.get('ecn', '本项')} · "
+        quantity = checked.get("quantity_impact")
+        if quantity:
+            lines.extend(["", f"### {prefix}用量变化核查", ""])
+            lines.append(f"- 核查状态：{quantity['status']}")
+            lines.append(f"- 说明：{quantity['boundary']}")
+            for item in quantity.get("by_top", []):
+                lines.append(f"- {item['top_material']}：每单位成品理论差量 {item['delta_per_top_unit']:g}")
+            if quantity.get("pending_paths"):
+                lines.append(f"- 待确认路径：{len(quantity['pending_paths'])} 条")
+        effectivity = checked.get("effectivity_comparison")
+        if effectivity:
+            lines.extend(["", f"### {prefix}生效性前后对比", ""])
+            lines.append(f"- 新增使用路径：{effectivity['added_paths']}")
+            lines.append(f"- 退出使用路径：{effectivity['removed_paths']}")
+            lines.append(f"- 仍然有效路径：{effectivity['unchanged_paths']}")
+            lines.append(f"- 说明：{effectivity['boundary']}")
     validation = result.get("material_validation", {})
     if validation.get("applicable"):
         lines.extend(
@@ -185,6 +204,10 @@ def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
         )
     planning = result.get("planning_impact", {})
     planning_metrics = planning.get("metrics", {})
+    unfinished = planning_metrics.get("unfinished_production_quantity")
+    undelivered = planning_metrics.get("undelivered_production_quantity")
+    unfinished_text = "待补数据" if unfinished is None else f"{unfinished:g}"
+    undelivered_text = "待补数据" if undelivered is None else f"{undelivered:g}"
     lines.extend(
         [
             "",
@@ -194,7 +217,9 @@ def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
             f"- 判断依据：{planning.get('rationale', '')}",
             f"- 关联生产订单：{planning_metrics.get('affected_production_orders', 0)}",
             f"- 需关注生产订单：{planning_metrics.get('active_production_orders', 0)}",
-            f"- 待交付/未完工成品数量：{planning_metrics.get('remaining_production_quantity', 0)}",
+            f"- 未完工成品数量：{unfinished_text}",
+            f"- 待交付成品数量：{undelivered_text}",
+            "- 数量口径：未完工＝订单量－确认产量；待交付＝订单量－交付量（分别下限为0）。两者不能相加，也不等同组件净需求。",
             f"- 关联销售订单行：{planning_metrics.get('linked_sales_items', planning_metrics.get('affected_sales_items', 0))}",
             f"- 待确认关联销售订单行：{planning_metrics.get('pending_sales_items', 0)}",
             f"- 结论范围：{planning.get('scope', {}).get('material', '本次ECN变更料号')} · "

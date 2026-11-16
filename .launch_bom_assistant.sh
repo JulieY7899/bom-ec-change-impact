@@ -29,7 +29,7 @@ is_ready() {
 is_ready_at() {
   local candidate_url="$1"
   /usr/bin/curl -fsS --max-time 2 "$candidate_url/api/health" 2>/dev/null |
-    /usr/bin/grep -q '"service": "bom-change-assistant"'
+    /usr/bin/grep -q '"build": "portfolio-v1.1-20261116-mac1"'
 }
 
 if [[ -r "$URL_FILE" ]]; then
@@ -78,9 +78,8 @@ BASE_PORT="${BOM_ASSISTANT_PORT:-8765}"
 PORT="$(find_available_port)"
 APP_URL="http://127.0.0.1:$PORT"
 HEALTH_URL="$APP_URL/api/health"
-/bin/printf '%s\n' "$APP_URL" >"$URL_FILE"
-
 /bin/mkdir -p "$PROJECT_DIR/data"
+printf '%s\n' "$APP_URL" >"$URL_FILE"
 
 if [[ "$QUIET_MODE" == "--quiet" ]]; then
   echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] 正在启动 BOM 助手" >>"$LOG_FILE"

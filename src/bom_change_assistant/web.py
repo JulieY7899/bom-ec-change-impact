@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from . import BUILD_ID, __version__
 from .ai import AIUnavailable, explain_with_openai
 from .config import (
     DATABASE_PATH,
@@ -26,11 +27,32 @@ from .config import (
     PORT,
 )
 from .demo import load_demo_snapshot
+from .impact_checks import order_demand_coverage, sum_known_quantities, production_progress_metrics
 from .impact_engine import ImpactEngine, ImpactError
 from .importers import WorkbookImporter
 from .models import ChangeRequest
 from .repository import Repository
 from .summaries import markdown_report, role_checklists, rule_summary
+
+def _local_request_allowed(host: str, origin: str = "") -> bool:
+    """Defend localhost UI against cross-site browser POSTs and DNS rebinding."""
+    try:
+        target = urlparse("http://" + host)
+        if target.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return False
+        if target.username or target.password:
+            return False
+        target_port = target.port or 80
+        if origin:
+            source = urlparse(origin)
+            if (source.scheme != "http" or source.hostname != target.hostname or
+                    source.username or source.password or
+                    (source.port or 80) != target_port):
+                return False
+        return True
+    except ValueError:
+        return False
+
 
 ASSET_DIR = Path(__file__).resolve().parent / "web_assets"
 TEMPLATE_PATH = (
@@ -53,7 +75,7 @@ def _json_bytes(payload: Any) -> bytes:
 
 class Handler(BaseHTTPRequestHandler):
     state: AppState
-    server_version = "BOMAssistant/0.1"
+    server_version = f"BOMAssistant/{__version__}"
 
     def log_message(self, *_: Any) -> None:
         # Intentionally disabled: request paths and user inputs must not enter logs.
@@ -99,6 +121,9 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(body.decode("utf-8") or "{}")
 
     def do_GET(self) -> None:
+        if not _local_request_allowed(self.headers.get("Host", ""), self.headers.get("Origin", "")):
+            self._error(403, "仅允许本机访问")
+            return
         route = urlparse(self.path)
         if route.path == "/api/health":
             self._json(
@@ -106,7 +131,8 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "service": "bom-change-assistant",
-                    "version": "0.1",
+                    "version": __version__,
+                    "build": BUILD_ID,
                 },
             )
             return
@@ -116,8 +142,8 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "privacy_mode": "敏感文字脱敏",
-                    "ai_configured": bool(os.environ.get(OPENAI_API_KEY_ENV)),
-                    "ai_model": OPENAI_MODEL,
+                    "ai_configured": False,
+                    "ai_model": "disabled",
                 }
             )
             self._json(200, payload)
@@ -227,6 +253,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body, content_types.get(path.suffix, "application/octet-stream"))
 
     def do_POST(self) -> None:
+        if not _local_request_allowed(self.headers.get("Host", ""), self.headers.get("Origin", "")):
+            self._error(403, "仅允许本机访问")
+            return
         route = urlparse(self.path)
         try:
             if route.path == "/api/snapshot/start":
@@ -256,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._analyze_batch()
                 return
             if route.path == "/api/ai":
-                self._ai_explain()
+                self._error(403, "外部 AI 功能已禁用，数据不会发送至模型服务。")
                 return
             self._error(404, "接口不存在")
         except (ValueError, ImpactError) as exc:
@@ -345,12 +374,20 @@ class Handler(BaseHTTPRequestHandler):
         for bom_version in versions:
             version_results = (
                 self.state.repository.analysis_results_for_bom_version(
-                    bom_version
+                    bom_version, draft_id
                 )
             )
             combined = self._combine_bom_version_results(
                 draft_id, bom_version, version_results
             )
+            combined["change_checks"] = [
+                {
+                    "ecn": item.get("ecn"),
+                    "quantity_impact": item.get("quantity_impact"),
+                    "effectivity_comparison": item.get("effectivity_comparison"),
+                }
+                for item in version_results
+            ]
             combined_report = markdown_report(combined)
             self.state.repository.save_analysis(
                 combined["analysis_id"], combined, combined_report
@@ -622,6 +659,14 @@ class Handler(BaseHTTPRequestHandler):
             ),
             key=lambda value: recommendation_rank.get(value, 0),
         )
+        demand_coverage = {
+            item["item"]: item
+            for item in order_demand_coverage(production_orders, sales_orders)
+        }
+        active_orders = [
+            item for item in production_orders
+            if ImpactEngine._production_needs_attention(item)
+        ]
         planning_impact = {
             "stage": "第一阶段",
             "status": "按核查版本汇总需求侧影响",
@@ -636,30 +681,14 @@ class Handler(BaseHTTPRequestHandler):
             ),
             "metrics": {
                 "affected_production_orders": len(production_orders),
-                "active_production_orders": sum(
-                    item.get("status") in {"已释放/执行中"}
-                    or (
-                        item.get("status") == "已完成"
-                        and float(item.get("undelivered_quantity") or 0) > 0
-                    )
-                    for item in production_orders
+                "active_production_orders": len(active_orders),
+                "affected_production_quantity": sum_known_quantities(
+                    item.get("order_quantity") for item in production_orders
                 ),
-                "affected_production_quantity": sum(
-                    float(item.get("order_quantity") or 0)
-                    for item in production_orders
-                ),
-                "remaining_production_quantity": sum(
-                    float(item.get("undelivered_quantity") or 0)
-                    for item in production_orders
-                    if item.get("status") in {"已释放/执行中"}
-                    or (
-                        item.get("status") == "已完成"
-                        and float(item.get("undelivered_quantity") or 0) > 0
-                    )
-                ),
+                **production_progress_metrics(active_orders),
                 "affected_sales_items": len(sales_orders),
-                "affected_sales_quantity": sum(
-                    float(item.get("order_quantity") or 0)
+                "affected_sales_quantity": sum_known_quantities(
+                    item.get("order_quantity")
                     for item in sales_orders
                 ),
                 "linked_sales_items": len(sales_orders),
@@ -672,7 +701,10 @@ class Handler(BaseHTTPRequestHandler):
                     for item in sales_orders
                 ),
             },
-            "coverage": planning_items[0].get("coverage", [])
+            "coverage": [
+                demand_coverage.get(item.get("item"), item)
+                for item in planning_items[0].get("coverage", [])
+            ]
             if planning_items
             else [],
             "scenario": {
@@ -915,6 +947,8 @@ def run_server(
 ) -> None:
     state = AppState(database_path)
     handler = type("BoundHandler", (Handler,), {"state": state})
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("隐私优先版本不允许监听非本机地址")
     server = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{port}"
     print(f"BOM 工程变更影响分析助手已启动：{url}")

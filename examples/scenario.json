@@ -1,0 +1,18 @@
+{
+  "data_classification": "Entirely synthetic; built-in demo fixture",
+  "change": {
+    "change_type": "replace",
+    "old_component": "COMP-001",
+    "new_component": "COMP-NEW",
+    "effective_date": "2026-08-01",
+    "bom_version": "BOM-000001"
+  },
+  "expected": {
+    "top_materials": ["FG-A", "FG-B"],
+    "upstream_paths": 3,
+    "sales_order_items": 2,
+    "production_orders": ["PRODUCTION-DEMO-ALPHA"],
+    "planning_recommendation_code": "DATA_GAP",
+    "material_readiness": "待补证"
+  }
+}
