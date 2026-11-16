@@ -179,6 +179,8 @@ def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
                 lines.append(f"- {item['top_material']}：每单位成品理论差量 {item['delta_per_top_unit']:g}")
             if quantity.get("pending_paths"):
                 lines.append(f"- 待确认路径：{len(quantity['pending_paths'])} 条")
+                for pending in quantity["pending_paths"]:
+                    lines.append(f"- {pending['path_id']}：{pending['reason']}")
         effectivity = checked.get("effectivity_comparison")
         if effectivity:
             lines.extend(["", f"### {prefix}生效性前后对比", ""])
@@ -186,6 +188,17 @@ def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
             lines.append(f"- 退出使用路径：{effectivity['removed_paths']}")
             lines.append(f"- 仍然有效路径：{effectivity['unchanged_paths']}")
             lines.append(f"- 说明：{effectivity['boundary']}")
+    lines.extend(["", "### 关联销售订单行", ""])
+    for order in result.get("sales_orders", []):
+        status = order.get("status") or "未知"
+        category = "待确认关联订单" if status in {"未知", "其他/待确认"} else "需行动订单"
+        lines.append(
+            f"- {order['sales_order']} / {order['item']} · {order['material']} · "
+            f"{status} · {category} · {order.get('requested_date') or '日期未知'} · "
+            f"{order['source_id']} 第 {order['source_row']} 行"
+        )
+    if not result.get("sales_orders"):
+        lines.append("- 没有发现关联记录")
     validation = result.get("material_validation", {})
     if validation.get("applicable"):
         lines.extend(

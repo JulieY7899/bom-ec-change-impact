@@ -280,8 +280,12 @@ async function importFiles() {
   const button = $("#import-files");
   progress.classList.remove("hidden");
   button.disabled = true;
+  let started = false;
   try {
-    await api("/api/snapshot/start", { method: "POST" });
+    await api("/api/snapshot/start", {
+      method: "POST", body: JSON.stringify({ expected_files: state.files.length }),
+    });
+    started = true;
     for (let index = 0; index < state.files.length; index += 1) {
       const percent = Math.round((index / state.files.length) * 100);
       $("#progress-bar").style.width = `${percent}%`;
@@ -295,23 +299,44 @@ async function importFiles() {
     $("#progress-bar").style.width = "96%";
     $("#progress-label").textContent = "建立业务编号索引";
     await api("/api/snapshot/finish", { method: "POST" });
+    started = false;
+    resetSnapshotResults();
     $("#progress-bar").style.width = "100%";
     $("#progress-label").textContent = "导入完成";
     state.files = [];
     $("#file-input").value = "";
     chooseFiles([]);
     await refreshStatus();
-    toast("核查数据已导入，敏感文字已脱敏");
+    toast("核查数据已导入，旧快照已在本机备份");
   } catch (error) {
+    if (started) {
+      try { await api("/api/snapshot/abort", { method: "POST" }); } catch (_) { /* Old active snapshot remains untouched. */ }
+      $("#progress-label").textContent = "导入未完成；旧快照保持可用";
+    }
     toast(error.message, true);
     button.disabled = false;
   }
+}
+
+function resetSnapshotResults() {
+  state.result = null;
+  state.report = "";
+  state.batchItems = [];
+  state.selectedBatchIndex = 0;
+  renderBatchSwitcher();
+  $("#analysis-result").classList.add("hidden");
+  $("#analysis-empty").classList.remove("hidden");
+  $("#report-result").classList.add("hidden");
+  $("#report-empty").classList.remove("hidden");
+  $("#report-content").replaceChildren();
+  $("#report-download").removeAttribute("href");
 }
 
 async function loadDemo() {
   try {
     $("#load-demo").disabled = true;
     await api("/api/demo", { method: "POST" });
+    resetSnapshotResults();
     await refreshStatus();
     toast("虚拟演示数据已载入；不代表企业实际业务数据");
   } catch (error) {
@@ -716,10 +741,38 @@ function renderAnalysis(result) {
   );
 
   renderPlanningImpact(result.planning_impact);
+  appendChangeChecks($("#tab-planning"), result);
   renderManufacturingImpact(result.manufacturing_impact);
   renderOrderTable("#tab-production", result.production_orders, "production");
   renderOrderTable("#tab-sales", result.sales_orders, "sales");
   renderWarnings(result.warnings);
+}
+
+function appendChangeChecks(host, result) {
+  (result.change_checks || [result]).forEach((checked) => {
+    const quantity = checked.quantity_impact;
+    const effectivity = checked.effectivity_comparison;
+    if (!quantity && !effectivity) return;
+    const card = reportElement("div", "report-card");
+    const prefix = checked.ecn || result.ecn || "本项";
+    if (quantity) {
+      card.appendChild(reportElement("h4", "", `${prefix} · 用量变化核查`));
+      card.appendChild(reportElement("p", "", `核查状态：${quantity.status}`));
+      card.appendChild(reportElement("p", "", quantity.boundary || ""));
+      (quantity.by_top || []).forEach((item) => card.appendChild(reportElement(
+        "p", "", `${item.top_material}：每单位成品理论差量 ${formatNumber(item.delta_per_top_unit)}`,
+      )));
+      (quantity.pending_paths || []).forEach((item) => card.appendChild(reportElement(
+        "p", "", `待确认路径 ${item.path_id}：${item.reason}`,
+      )));
+    }
+    if (effectivity) {
+      card.appendChild(reportElement("h4", "", `${prefix} · 生效性前后对比`));
+      card.appendChild(reportElement("p", "", `新增使用路径：${effectivity.added_paths}；退出使用路径：${effectivity.removed_paths}；仍然有效路径：${effectivity.unchanged_paths}`));
+      card.appendChild(reportElement("p", "", effectivity.boundary || ""));
+    }
+    host.appendChild(card);
+  });
 }
 
 function renderMaterialValidation(validation) {
@@ -1381,12 +1434,13 @@ function renderReport(report, result = state.result) {
     riskSection.appendChild(validationCard);
   }
 
+  appendChangeChecks(riskSection, result);
   const orderGrid = reportElement("div", "report-two-column report-orders");
   [
     ["生产订单", result.production_orders, (item) =>
       `${item.production_order} · ${item.material} · ${item.status}`],
     ["销售订单", result.sales_orders, (item) =>
-      `${item.sales_order} / ${item.item} · ${item.material} · ${item.requested_date || "日期未知"}`],
+      `${item.sales_order} / ${item.item} · ${item.material} · ${item.status} · ${["未知", "其他/待确认"].includes(item.status) ? "待确认关联订单" : "需行动订单"} · ${item.requested_date || "日期未知"} · ${item.source_id} 第 ${item.source_row} 行`],
   ].forEach(([title, items, formatter]) => {
     const card = reportElement("div", "report-card");
     const heading = reportElement("div", "report-card-heading");

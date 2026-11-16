@@ -2,7 +2,7 @@
 
 [![Verify synthetic examples](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml)
 
-**V1.1-mac1 (0.2.1): 47 local regression tests passed; Mac launch and the core workflow were verified in a real browser.** Unfinished and undelivered quantities remain separate. See the [verification record](docs/evaluation.md) for scope and limitations.
+**V1.1-mac2 (0.2.2).** Failed import batches preserve the previous snapshot; browser and downloaded reports now include sales lines, quantity deltas and review reasons. All 55 regressions passed. Of 25 previously approved business cases, 23 passed and 2 remain capability gaps. **Remaining gaps: B19 purchase commitments/receipts and B22 engineering versions/order references.** See the [verification record](docs/evaluation.md) for scope and limitations.
 
 
 **Local decision support for engineering change reviews**

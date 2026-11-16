@@ -5,6 +5,8 @@ import json
 import os
 import re
 import secrets
+import sqlite3
+from contextlib import closing
 import tempfile
 import threading
 import webbrowser
@@ -66,7 +68,78 @@ class AppState:
         self.repository = Repository(database_path)
         self.importer = WorkbookImporter(self.repository)
         self.engine = ImpactEngine(self.repository)
-        self.import_lock = threading.Lock()
+        # One lock covers request reads, analysis and publication; clients never
+        # observe a partially replaced active snapshot.
+        self.import_lock = threading.RLock()
+        self.staging_directory = None
+        self.staging_repository = None
+        self.staging_importer = None
+        self.expected_files = None
+        self.imported_files = 0
+
+    @staticmethod
+    def copy_database(source: Path, destination: Path) -> None:
+        # SQLite backup includes committed WAL data and publishes atomically.
+        with closing(sqlite3.connect(source)) as src, closing(sqlite3.connect(destination)) as dst:
+            src.backup(dst)
+
+    def begin_import(self, expected_files: int | None = None) -> None:
+        if self.staging_repository is not None:
+            raise ValueError("已有导入批次进行中，请先完成或取消该批次")
+        if expected_files is not None and (type(expected_files) is not int or expected_files < 1):
+            raise ValueError("导入文件数必须为正整数")
+        self.staging_directory = tempfile.TemporaryDirectory(
+            prefix=".bom-import-", dir=self.repository.database_path.parent,
+        )
+        try:
+            stage_path = Path(self.staging_directory.name) / "snapshot.sqlite3"
+            self.copy_database(self.repository.database_path, stage_path)
+            self.staging_repository = Repository(stage_path)
+            self.staging_repository.start_snapshot()
+            self.staging_importer = WorkbookImporter(self.staging_repository)
+            self.expected_files = expected_files
+            self.imported_files = 0
+        except Exception:
+            self.abort_import()
+            raise
+
+    def abort_import(self) -> None:
+        directory = self.staging_directory
+        self.staging_directory = None
+        self.staging_repository = None
+        self.staging_importer = None
+        self.expected_files = None
+        self.imported_files = 0
+        if directory is not None:
+            directory.cleanup()
+
+    def finish_import(self) -> dict[str, Any]:
+        if self.staging_repository is None or not self.imported_files:
+            raise ValueError("没有可完成的导入批次；旧快照保持可用")
+        if self.expected_files is not None and self.imported_files != self.expected_files:
+            raise ValueError("导入文件数不完整；旧快照保持可用")
+        stage = self.staging_repository
+        with stage.connect() as connection:
+            if not connection.execute("SELECT 1 FROM bom_edges WHERE date_valid=1 LIMIT 1").fetchone():
+                raise ValueError("新快照没有有效 BOM 关系；旧快照保持可用")
+        stats = stage.finish_snapshot()
+        # Preserve the previous active database, including its analysis history.
+        # This file is local runtime data and must never enter a public commit.
+        with tempfile.NamedTemporaryFile(
+            prefix="snapshot-backup-", suffix=".sqlite3",
+            dir=self.repository.database_path.parent, delete=False,
+        ) as backup:
+            backup_path = Path(backup.name)
+        self.copy_database(self.repository.database_path, backup_path)
+        self.copy_database(stage.database_path, self.repository.database_path)
+        self.importer = WorkbookImporter(self.repository)
+        self.engine = ImpactEngine(self.repository)
+        self.abort_import()
+        return stats
+
+    def require_no_import(self) -> None:
+        if self.staging_repository is not None:
+            raise ValueError("导入批次尚未完成；可查看旧报告，请完成或取消后再核查")
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -121,6 +194,10 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(body.decode("utf-8") or "{}")
 
     def do_GET(self) -> None:
+        with self.state.import_lock:
+            self._get_locked()
+
+    def _get_locked(self) -> None:
         if not _local_request_allowed(self.headers.get("Host", ""), self.headers.get("Origin", "")):
             self._error(403, "仅允许本机访问")
             return
@@ -253,6 +330,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, body, content_types.get(path.suffix, "application/octet-stream"))
 
     def do_POST(self) -> None:
+        with self.state.import_lock:
+            self._post_locked()
+
+    def _post_locked(self) -> None:
         if not _local_request_allowed(self.headers.get("Host", ""), self.headers.get("Origin", "")):
             self._error(403, "仅允许本机访问")
             return
@@ -260,28 +341,39 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route.path == "/api/snapshot/start":
                 with self.state.import_lock:
-                    self.state.repository.start_snapshot()
-                    self.state.importer = WorkbookImporter(self.state.repository)
+                    self.state.begin_import(self._read_json().get("expected_files"))
                 self._json(200, {"ok": True})
                 return
             if route.path == "/api/snapshot/finish":
                 with self.state.import_lock:
-                    stats = self.state.repository.finish_snapshot()
+                    stats = self.state.finish_import()
                 self._json(200, {"ok": True, "stats": stats})
                 return
+            if route.path == "/api/snapshot/abort":
+                self.state.abort_import()
+                self._json(200, {"ok": True})
+                return
             if route.path == "/api/demo":
-                with self.state.import_lock:
-                    stats = load_demo_snapshot(self.state.repository)
-                    self.state.importer = WorkbookImporter(self.state.repository)
+                self.state.require_no_import()
+                self.state.begin_import()
+                try:
+                    load_demo_snapshot(self.state.staging_repository)
+                    self.state.imported_files = 1
+                    stats = self.state.finish_import()
+                except Exception:
+                    self.state.abort_import()
+                    raise
                 self._json(200, {"ok": True, "stats": stats})
                 return
             if route.path == "/api/import/file":
                 self._import_file()
                 return
             if route.path == "/api/analyze":
+                self.state.require_no_import()
                 self._analyze()
                 return
             if route.path == "/api/analyze-batch":
+                self.state.require_no_import()
                 self._analyze_batch()
                 return
             if route.path == "/api/ai":
@@ -289,8 +381,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._error(404, "接口不存在")
         except (ValueError, ImpactError) as exc:
+            if route.path in {"/api/import/file", "/api/snapshot/finish"}:
+                self.state.abort_import()
             self._error(400, str(exc))
         except Exception:
+            if route.path in {"/api/import/file", "/api/snapshot/finish"}:
+                self.state.abort_import()
             # Do not include raw exception details: they may contain local paths.
             self._error(500, "处理失败；请检查文件格式或数据映射后重试。")
 
@@ -313,7 +409,10 @@ class Handler(BaseHTTPRequestHandler):
                     temporary.write(chunk)
                     remaining -= len(chunk)
             with self.state.import_lock:
-                result = self.state.importer.import_file(temporary_path)
+                if self.state.staging_importer is None:
+                    raise ValueError("请先开始新的导入批次；旧快照保持可用")
+                result = self.state.staging_importer.import_file(temporary_path)
+                self.state.imported_files += 1
             self._json(200, {"ok": True, "result": result.to_dict()})
         finally:
             if temporary_path:
@@ -383,11 +482,14 @@ class Handler(BaseHTTPRequestHandler):
             combined["change_checks"] = [
                 {
                     "ecn": item.get("ecn"),
-                    "quantity_impact": item.get("quantity_impact"),
+                    "quantity_impact": deepcopy(item.get("quantity_impact")),
                     "effectivity_comparison": item.get("effectivity_comparison"),
                 }
                 for item in version_results
             ]
+            for checked in combined["change_checks"]:
+                for pending in (checked.get("quantity_impact") or {}).get("pending_paths", []):
+                    pending["path_id"] = f"{checked['ecn']}-{pending['path_id']}"
             combined_report = markdown_report(combined)
             self.state.repository.save_analysis(
                 combined["analysis_id"], combined, combined_report
@@ -702,7 +804,11 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             },
             "coverage": [
-                demand_coverage.get(item.get("item"), item)
+                ({**item, "status": "需复核"}
+                 if item.get("item") == "BOM结构与生效范围" and any(
+                     coverage.get("item") == "BOM结构与生效范围" and coverage.get("status") == "需复核"
+                     for impact in planning_items for coverage in impact.get("coverage", [])
+                 ) else demand_coverage.get(item.get("item"), item))
                 for item in planning_items[0].get("coverage", [])
             ]
             if planning_items
