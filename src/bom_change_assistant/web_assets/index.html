@@ -40,8 +40,8 @@
       <div class="privacy-card">
         <div class="privacy-dot"></div>
         <div>
-          <strong>敏感信息脱敏模式</strong>
-          <span>业务编号保留 · 描述与企业名称显示 XXX</span>
+          <strong>本地核查 · 外部 AI 已关闭</strong>
+          <span>业务编号保存在本机 · 无审批或系统回写</span>
         </div>
       </div>
     </aside>
@@ -111,7 +111,7 @@
         <div class="metric-grid six import-metrics" id="snapshot-metrics">
           <article class="metric"><span>可用 BOM 明细行</span><strong id="m-valid-rows">0</strong><small id="m-row-note">纳入核查</small></article>
           <article class="metric"><span>顶层成品</span><strong id="m-tops">0</strong><small>纳入核查的成品</small></article>
-          <article class="metric"><span>BOM 数据版本</span><strong id="m-versions">0</strong><small id="m-version-note">按数据来源区分</small></article>
+          <article class="metric"><span>BOM 来源记录数</span><strong id="m-versions">0</strong><small id="m-version-note">按数据来源区分</small></article>
           <article class="metric"><span>组件料号数</span><strong id="m-components">0</strong><small>可按料号查询</small></article>
           <article class="metric"><span>BOM 最深层级</span><strong id="m-level">0</strong><small>已导入结构的最大层级</small></article>
           <article class="metric"><span>未纳入行</span><strong id="m-excluded">0</strong><small>日期异常未纳入核查</small></article>
@@ -121,14 +121,14 @@
           <div class="panel-heading compact">
             <div>
               <p class="kicker">已导入 BOM 范围</p>
-              <h2>顶层成品与数据版本</h2>
-              <p>同一顶层成品出现在不同数据来源时分别列示，便于发现重复数据或多个版本。</p>
+              <h2>顶层成品与数据来源</h2>
+              <p>数据来源数量不代表真实 EBOM 版本数量；版本、配置与生效性仍需业务人员核实。</p>
             </div>
             <span class="muted" id="bom-version-summary">尚未导入</span>
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>顶层成品</th><th>物料号</th><th>数据版本</th><th>可用明细行</th><th>最大层级</th><th>来源编号</th></tr></thead>
+              <thead><tr><th>顶层成品</th><th>物料号</th><th>导入来源数</th><th>可用明细行</th><th>最大层级</th><th>来源编号</th></tr></thead>
               <tbody id="bom-version-table"><tr><td colspan="6" class="empty">导入后在此显示 BOM 核查范围</td></tr></tbody>
             </table>
           </div>

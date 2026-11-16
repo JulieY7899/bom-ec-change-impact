@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bom-change-assistant"
-version = "0.1.0"
-description = "本地、匿名、可追溯的 BOM 工程变更影响分析助手"
+version = "0.2.1"
+description = "本地运行、规则驱动、证据可追溯的 BOM 工程变更影响核查工具"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []

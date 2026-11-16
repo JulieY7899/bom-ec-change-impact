@@ -8,6 +8,10 @@ from typing import Any
 
 from .config import MAX_ENUMERATED_PATHS
 from .dispositions import resolve_disposition
+from .impact_checks import (
+    quantity_check, effectivity_comparison, order_demand_coverage, sum_known_quantities,
+    production_progress_metrics,
+)
 from .models import ChangeRequest
 from .normalization import coerce_date, safe_text
 from .repository import Repository
@@ -69,6 +73,26 @@ class ImpactEngine:
         result["manufacturing_impact"] = self._manufacturing_impact(
             request, result
         )
+        if request.change_type == "quantity":
+            result["quantity_impact"] = quantity_check(
+                result["directions"]["upstream"]["paths"],
+                request.old_quantity,
+                request.new_quantity,
+                warnings=upstream["warnings"],
+            )
+        if request.change_type == "effectivity":
+            original = replace(
+                request,
+                change_type="remove",
+                effective_date=request.old_effective_date,
+            )
+            before = self._combine_directions(
+                self._analyze_direction(replace(original, propagation_direction="upstream")),
+                self._analyze_direction(replace(original, propagation_direction="downstream")),
+            )
+            result["effectivity_comparison"] = effectivity_comparison(
+                before, result
+            )
         return result
 
     def _analyze_direction(self, request: ChangeRequest) -> dict[str, Any]:
@@ -748,7 +772,6 @@ class ImpactEngine:
                 parameters,
             ).fetchall()
             sales_item_keys = {row["sales_item_key"] for row in sales_rows}
-            sales_order_keys = {row["sales_order_key"] for row in sales_rows}
 
             conditions = [f"material_key IN ({placeholders})"]
             order_parameters: list[str] = list(parameters)
@@ -756,10 +779,6 @@ class ImpactEngine:
                 item_placeholders = ",".join("?" for _ in sales_item_keys)
                 conditions.append(f"sales_item_key IN ({item_placeholders})")
                 order_parameters.extend(sorted(sales_item_keys))
-            if sales_order_keys:
-                order_placeholders = ",".join("?" for _ in sales_order_keys)
-                conditions.append(f"sales_order_key IN ({order_placeholders})")
-                order_parameters.extend(sorted(sales_order_keys))
             production_rows = connection.execute(
                 f"""
                 SELECT p.*, pm.plant_key, pm.order_quantity,
@@ -838,15 +857,15 @@ class ImpactEngine:
                 "order_quantity": row["order_quantity"],
                 "delivered_quantity": row["delivered_quantity"],
                 "confirmed_quantity": row["confirmed_quantity"],
-                "remaining_quantity": max(
-                    float(row["order_quantity"] or 0)
-                    - float(row["confirmed_quantity"] or 0),
-                    0,
+                "remaining_quantity": (
+                    max(float(row["order_quantity"]) - float(row["confirmed_quantity"]), 0)
+                    if row["order_quantity"] is not None and row["confirmed_quantity"] is not None
+                    else None
                 ),
-                "undelivered_quantity": max(
-                    float(row["order_quantity"] or 0)
-                    - float(row["delivered_quantity"] or 0),
-                    0,
+                "undelivered_quantity": (
+                    max(float(row["order_quantity"]) - float(row["delivered_quantity"]), 0)
+                    if row["order_quantity"] is not None and row["delivered_quantity"] is not None
+                    else None
                 ),
                 "created_date": row["created_date"],
                 "actual_start": row["actual_start"],
@@ -866,7 +885,10 @@ class ImpactEngine:
     def _production_needs_attention(item: dict[str, Any]) -> bool:
         return item.get("status") in {"已释放/执行中"} or (
             item.get("status") == "已完成"
-            and float(item.get("undelivered_quantity") or 0) > 0
+            and (
+                item.get("undelivered_quantity") is None
+                or float(item["undelivered_quantity"]) > 0
+            )
         )
 
     def _planning_impact(
@@ -879,14 +901,11 @@ class ImpactEngine:
             for item in production_orders
             if self._production_needs_attention(item)
         ]
-        production_quantity = sum(
-            float(item.get("order_quantity") or 0) for item in production_orders
+        production_quantity = sum_known_quantities(
+            item.get("order_quantity") for item in production_orders
         )
-        remaining_quantity = sum(
-            float(item.get("remaining_quantity") or 0) for item in active_orders
-        )
-        sales_quantity = sum(
-            float(item.get("order_quantity") or 0) for item in sales_orders
+        sales_quantity = sum_known_quantities(
+            item.get("order_quantity") for item in sales_orders
         )
         pending_sales_orders = [
             item
@@ -947,7 +966,11 @@ class ImpactEngine:
         )
         new_gap = float(scenario_inputs["new_required_demand"] or 0) - new_supply
 
-        if not scenario_provided:
+        if request.change_type != "replace":
+            recommendation = "非替换变更：待计划确认"
+            rationale = "Run-in 与 Hard Cut 切换规则仅适用于组件替换；当前变更不自动选择切换策略。"
+            recommendation_code = "NOT_APPLICABLE"
+        elif not scenario_provided:
             recommendation = "待补供应数据"
             rationale = "已识别订单侧影响；可用库存、在途、Open PO和组件需求尚未提供。"
             recommendation_code = "DATA_GAP"
@@ -1006,25 +1029,7 @@ class ImpactEngine:
                 "status": "已具备",
                 "detail": f"{result['metrics']['paths']} 条BOM关联路径",
             },
-            {
-                "item": "生产需求",
-                "status": "已具备" if production_orders else "未匹配",
-                "detail": f"{len(production_orders)} 个关联生产订单",
-            },
-            {
-                "item": "销售需求",
-                "status": (
-                    "待确认"
-                    if pending_sales_orders
-                    else "已具备"
-                    if sales_orders
-                    else "未匹配"
-                ),
-                "detail": (
-                    f"{len(sales_orders)} 个关联销售订单行，其中 "
-                    f"{len(pending_sales_orders)} 个状态待确认"
-                ),
-            },
+            *order_demand_coverage(production_orders, sales_orders),
             {
                 "item": "可用库存/在途/Open PO",
                 "status": (
@@ -1073,7 +1078,7 @@ class ImpactEngine:
                 "affected_production_orders": len(production_orders),
                 "active_production_orders": len(active_orders),
                 "affected_production_quantity": production_quantity,
-                "remaining_production_quantity": remaining_quantity,
+                **production_progress_metrics(active_orders),
                 "affected_sales_items": len(sales_orders),
                 "affected_sales_quantity": sales_quantity,
                 "linked_sales_items": len(sales_orders),
@@ -1171,6 +1176,14 @@ class ImpactEngine:
                 "name": "未确认",
                 "evidence_level": "不足",
                 "rationale": "当前未匹配生产订单，制造处置对象不足，建议由制造工程确认是否适用。",
+                "requires_confirmation": True,
+            }
+        if stage_counts.get("状态待确认", 0):
+            return {
+                "code": "HOLD_REVIEW",
+                "name": "隔离待判",
+                "evidence_level": "不足",
+                "rationale": "关联订单的交付数量或实际执行状态缺失，尚无法确认制造阶段；需补齐交付/执行状态后由制造工程复核。",
                 "requires_confirmation": True,
             }
         if stage_counts.get("WIP/生产中", 0) or stage_counts.get(

@@ -9,7 +9,9 @@ venv/
 .env.*
 *.log
 *.sqlite3
+*.sqlite3-*
 *.db
+*.db-*
 *.db-journal
 data/*
 !data/.gitkeep
@@ -22,3 +24,10 @@ outputs/*
 !outputs/bom-import-template/
 outputs/bom-import-template/*
 !outputs/bom-import-template/BOM工程变更数据导入模板.xlsx
+.playwright-cli/
+output/
+examples/sample-report.md
+examples/sample-result.json
+examples/verification.json
+docs/verification-*.txt
+docs/profile-draft.md

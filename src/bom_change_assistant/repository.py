@@ -869,7 +869,7 @@ class Repository:
         return json.loads(row["result_json"]), row["report_markdown"]
 
     def analysis_results_for_bom_version(
-        self, bom_version: str
+        self, bom_version: str, draft_id: str
     ) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -877,10 +877,10 @@ class Repository:
                 SELECT a.result_json
                 FROM change_log c
                 JOIN analysis_runs a ON a.analysis_id=c.analysis_id
-                WHERE c.bom_version=?
+                WHERE c.bom_version=? AND c.draft_id=?
                 ORDER BY c.created_at, c.log_id
                 """,
-                (bom_version,),
+                (bom_version, draft_id),
             ).fetchall()
         return [json.loads(row["result_json"]) for row in rows]
 

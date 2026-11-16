@@ -81,6 +81,10 @@ function formatNumber(value) {
   return Number(value || 0).toLocaleString("zh-CN");
 }
 
+function formatQuantity(value) {
+  return value === null || value === undefined ? "待补数据" : formatNumber(value);
+}
+
 function businessText(value) {
   return String(value || "")
     .replaceAll("新组件物料与寻源验证", "新组件物料与供应准备")
@@ -161,8 +165,8 @@ async function refreshStatus() {
       ? `已纳入 ${formatNumber(data.bom_edges)} 条 BOM 结构`
       : "纳入核查";
     $("#m-version-note").textContent = data.multi_version_boms
-      ? `${data.multi_version_boms} 个 BOM 含多个版本`
-      : "按数据来源区分";
+      ? `${data.multi_version_boms} 个成品涉及多个导入来源（非版本认证）`
+      : "仅统计导入来源，非 EBOM 版本";
     $("#source-summary").textContent = data.source_count
       ? `${data.source_count} 个数据来源 · ${formatNumber(data.valid_bom_rows)} 条可用 BOM 明细行`
       : "尚未导入";
@@ -212,7 +216,7 @@ function renderBomVersions(items) {
   body.replaceChildren();
   const multiVersionCount = items.filter((item) => item.version_count > 1).length;
   $("#bom-version-summary").textContent = items.length
-    ? `${items.length} 个顶层成品 · ${items.reduce((sum, item) => sum + item.version_count, 0)} 个数据版本`
+    ? `${items.length} 个顶层成品 · ${items.reduce((sum, item) => sum + item.version_count, 0)} 个 BOM 来源记录`
     : "尚未导入";
   if (!items.length) {
     body.innerHTML = '<tr><td colspan="6" class="empty">导入后在此显示 BOM 核查范围</td></tr>';
@@ -222,7 +226,7 @@ function renderBomVersions(items) {
     const row = document.createElement("tr");
     const version = document.createElement("span");
     version.className = item.version_count > 1 ? "version-badge multi" : "version-badge";
-    version.textContent = `${item.version_count} 个版本`;
+    version.textContent = `${item.version_count} 个来源`;
     const values = [
       item.bom,
       item.material,
@@ -240,7 +244,7 @@ function renderBomVersions(items) {
     body.appendChild(row);
   });
   if (multiVersionCount) {
-    $("#bom-version-summary").textContent += ` · ${multiVersionCount} 个顶层成品含多个版本`;
+    $("#bom-version-summary").textContent += ` · ${multiVersionCount} 个成品来自多个导入来源`;
   }
 }
 
@@ -309,7 +313,7 @@ async function loadDemo() {
     $("#load-demo").disabled = true;
     await api("/api/demo", { method: "POST" });
     await refreshStatus();
-    toast("17 份脱敏业务数据和 3 个计划备料情景已载入");
+    toast("虚拟演示数据已载入；不代表企业实际业务数据");
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -793,7 +797,8 @@ function renderPlanningImpact(impact) {
   appendMetricCards(host, [
     ["受影响生产订单", formatNumber(metrics.affected_production_orders || 0), "只含已释放/WIP/完工未交付"],
     ["需关注生产订单", formatNumber(metrics.active_production_orders || 0), "用于ME识别"],
-    ["待交付/未完工成品", formatNumber(metrics.remaining_production_quantity || 0), "成品数量，不等同组件需求"],
+    ["未完工成品", formatQuantity(metrics.unfinished_production_quantity), "订单量－确认产量，下限为0"],
+    ["待交付成品", formatQuantity(metrics.undelivered_production_quantity), "订单量－交付量；两项不能相加"],
     ["关联销售订单行", formatNumber(metrics.linked_sales_items || 0), `其中 ${formatNumber(metrics.pending_sales_items || 0)} 行待确认`],
   ]);
 
@@ -1178,7 +1183,7 @@ function renderOrderTable(selector, items, kind) {
     return;
   }
   const columns = kind === "production"
-    ? [["evidence_id", "来源记录号"], ["production_order", "生产订单"], ["material", "成品"], ["plant", "工厂"], ["order_quantity", "订单数量"], ["confirmed_quantity", "确认产量"], ["linked_sales_order", "销售订单"], ["status", "状态"]]
+    ? [["evidence_id", "来源记录号"], ["production_order", "生产订单"], ["material", "成品"], ["plant", "工厂"], ["order_quantity", "订单数量"], ["confirmed_quantity", "确认产量"], ["delivered_quantity", "交付量"], ["linked_sales_order", "销售订单"], ["status", "状态"]]
     : [["evidence_id", "来源记录号"], ["sales_order", "销售订单"], ["item", "项目"], ["material", "成品"], ["plant", "工厂"], ["order_quantity", "订单数量"], ["configuration", "配置"], ["requested_date", "需求日期"]];
   const wrap = document.createElement("div");
   wrap.className = "table-wrap";
@@ -1414,17 +1419,19 @@ function renderReport(report, result = state.result) {
   [
     ["受影响生产订单", pm.affected_production_orders || 0],
     ["需关注生产订单", pm.active_production_orders || 0],
-    ["待交付/未完工成品", pm.remaining_production_quantity || 0],
+    ["未完工成品", pm.unfinished_production_quantity],
+    ["待交付成品", pm.undelivered_production_quantity],
     ["关联销售订单行", pm.linked_sales_items || pm.affected_sales_items || 0],
   ].forEach(([label, value]) => {
     const card = reportElement("div", "report-metric");
     card.append(
-      reportElement("strong", "", formatNumber(value)),
+      reportElement("strong", "", formatQuantity(value)),
       reportElement("span", "", label),
     );
     planningMetrics.appendChild(card);
   });
   planningSection.appendChild(planningMetrics);
+  planningSection.appendChild(reportElement("p", "muted", "未完工＝订单量－确认产量；待交付＝订单量－交付量（分别下限为0）。两者不能相加，也不等同组件净需求。"));
   const coverageRecords = reportElement("div", "report-records report-coverage");
   (planningImpact.coverage || []).forEach((item) => {
     coverageRecords.appendChild(reportElement(
