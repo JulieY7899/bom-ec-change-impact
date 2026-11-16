@@ -2,7 +2,7 @@
 
 [![Verify synthetic examples](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml)
 
-**V1.1-mac1（0.2.1）：47 项本机回归通过，已完成 Mac 启动和真实浏览器核心流程验收。** 未完工与待交付数量分别展示；测试范围和限制见[验证记录](docs/evaluation.md)。
+**V1.1-mac2（0.2.2）** 修复整批导入失败时的旧快照保护，以及网页与下载报告的订单、用量和复核信息一致性。55 项回归通过；已确认业务验收集 25 例中 23 例通过、2 例能力缺口。**两项缺口仍未实现：B19 采购承诺/到货明细，B22 工程版本/订单引用。** 原 V1.1-mac1 与数据保留；范围和限制见[验证记录](docs/evaluation.md)。
 
 
 **工程变更影响核查 · 本地决策支持原型**

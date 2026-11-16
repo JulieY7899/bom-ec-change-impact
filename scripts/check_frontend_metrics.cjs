@@ -10,7 +10,7 @@ const fixture = JSON.parse(execFileSync(process.env.PYTHON || 'python3', ['-c',
   'import json, sys; sys.path.insert(0, "scripts"); from run_example import reproduce; print(json.dumps(reproduce()))',
 ], { cwd: root, encoding: 'utf8' }));
 class Element {
-  constructor(tag = 'div') { this.tag = tag; this.children = []; this.className = ''; this._text = ''; this.classList = {add(){}, remove(){}, toggle(){}}; }
+  constructor(tag = 'div') { this.tag = tag; this.children = []; this.className = ''; this.style = {}; this._text = ''; this.classList = {add(){}, remove(){}, toggle(){}}; }
   append(...children) { this.children.push(...children); }
   appendChild(child) { this.children.push(child); return child; }
   replaceChildren(...children) { this.children = children; this._text = ''; }
@@ -46,3 +46,51 @@ for (const [unfinished, undelivered, expectedUnfinished, expectedUndelivered] of
   }
 }
 console.log('Frontend rendering verified: 4 scenarios × 2 views; distinct quantities, unknowns and zero preserved.');
+// Display the same business facts in the planning view and downloadable-report preview.
+for (const check of [
+  {status: '已计算', by_top: [{top_material: 'FG-TRACE', delta_per_top_unit: 9}], pending_paths: [], boundary: '理论差量，非实际需求'},
+  {status: '需人工复核', by_top: [], pending_paths: [{path_id: 'ECN-TRACE-UP-001', reason: '上层用量缺失'}], boundary: '不得输出不完整合计'},
+  {status: '需人工复核', by_top: [], pending_paths: [{path_id: 'ECN-TRACE-UP-002', reason: '旧用量与来源不一致'}], boundary: '不得输出不完整合计'},
+]) {
+  const result = structuredClone(fixture);
+  result.change_checks = [{ecn: 'ECN-TRACE', quantity_impact: check,
+    effectivity_comparison: {added_paths: 2, removed_paths: 1, unchanged_paths: 3, boundary: '按两个日期比较'}}];
+  result.sales_orders = [{sales_order: 'SO-TRACE', item: '10', material: 'FG-TRACE', status: '未知', requested_date: null, source_id: 'SRC-TRACE', source_row: 7}];
+  context.result = result;
+  vm.runInContext('renderPlanningImpact(result.planning_impact); appendChangeChecks(document.querySelector("#tab-planning"), result); renderReport("", result);', context);
+  for (const selector of ['#tab-planning', '#report-content']) {
+    const text = hosts.get(selector).textContent;
+    for (const expected of ['ECN-TRACE', check.status, check.boundary, '新增使用路径：2', '退出使用路径：1', '仍然有效路径：3']) assert.ok(text.includes(expected), expected);
+    for (const pending of check.pending_paths) {
+      assert.ok(text.includes(pending.path_id));
+      assert.ok(text.includes(pending.reason));
+    }
+    if (check.by_top.length) assert.ok(text.includes('FG-TRACE：每单位成品理论差量 9'));
+    else assert.ok(!text.includes('每单位成品理论差量'));
+  }
+  for (const expected of ['SO-TRACE / 10', '未知', '待确认关联订单', 'SRC-TRACE 第 7 行']) assert.ok(hosts.get('#report-content').textContent.includes(expected), expected);
+}
+console.log('Report consistency verified: quantity delta, two review reasons, evidence IDs, effectivity counts and unknown sales status.');
+// Exercise the real import workflow: a failed batch retains the old report;
+// a successful publication must stop showing links into the previous snapshot.
+(async () => {
+  for (const fails of [true, false]) {
+    const calls = [];
+    context.document.querySelector('#report-download').removeAttribute = function(key) { delete this[key]; };
+    context.calls = calls;
+    context.failImport = fails;
+    vm.runInContext(`
+      state.files = [{name: 'synthetic.xlsx'}];
+      state.result = {analysis_id: 'OLD'}; state.report = 'old report';
+      state.batchItems = []; document.querySelector('#report-download').href = '/old-report';
+      api = async (path) => { calls.push(path); if (failImport && path === '/api/import/file') throw Error('bad workbook'); return {}; };
+      refreshStatus = async () => {}; chooseFiles = () => {}; toast = () => {};
+    `, context);
+    await vm.runInContext('importFiles()', context);
+    assert.equal(vm.runInContext('state.result?.analysis_id ?? null', context), fails ? 'OLD' : null);
+    assert.equal(vm.runInContext('state.report', context), fails ? 'old report' : '');
+    assert.equal(hosts.get('#report-download').href, fails ? '/old-report' : undefined);
+    assert.ok(calls.includes(fails ? '/api/snapshot/abort' : '/api/snapshot/finish'));
+  }
+  console.log('Import UI verified: failures preserve the old report; successful publication clears stale results and links.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

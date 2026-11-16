@@ -1026,7 +1026,10 @@ class ImpactEngine:
         coverage = [
             {
                 "item": "BOM结构与生效范围",
-                "status": "已具备",
+                "status": "需复核" if any(
+                    warning.get("code") in {"GRAPH_CYCLE", "PATH_LIMIT", "INCOMPLETE_BRANCH", "INVALID_EFFECTIVITY"}
+                    for warning in result.get("warnings", [])
+                ) else "已具备",
                 "detail": f"{result['metrics']['paths']} 条BOM关联路径",
             },
             *order_demand_coverage(production_orders, sales_orders),
