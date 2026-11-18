@@ -163,6 +163,7 @@ class WorkflowTests(unittest.TestCase):
         def convert(command, **options):
             (options["cwd"] / "material.pptx").write_bytes(presentation())
 
+        self.state.legacy_ppt_converter = self.root / "synthetic-soffice"
         with patch("bom_change_assistant.knowledge.subprocess.run", side_effect=convert) as converter:
             parsed = self.request(url, upload)
             converter.assert_called_once()
