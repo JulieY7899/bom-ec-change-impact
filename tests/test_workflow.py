@@ -1,18 +1,24 @@
 """Workflow HTTP contracts and local PPT retrieval, using invented data only."""
 from __future__ import annotations
 
+import hashlib
 import html
 import http.client
 import io
 import json
+import secrets
+import sqlite3
 import tempfile
 import threading
 import unittest
 from copy import deepcopy
+from dataclasses import replace
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
+from bom_change_assistant.accounts import Accounts, password_key, set_account
 from bom_change_assistant.knowledge import A, P, R, RELS
 from bom_change_assistant.web import AppState, Handler
 from tests.test_engineering import OLD_BOM, QUERY, base, order, record, sheet
@@ -48,6 +54,8 @@ class WorkflowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.accounts = self.root / "accounts.sqlite3"
+        self.token = ""
         self.state = AppState(self.root / "workflow.sqlite3")
         self.server = ThreadingHTTPServer(("127.0.0.1", 0),
             type("WorkflowHandler", (Handler,), {"state": self.state}))
@@ -62,7 +70,8 @@ class WorkflowTests(unittest.TestCase):
         client = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
         try:
             body = None if method == "GET" else payload if isinstance(payload, bytes) else json.dumps(payload or {})
-            client.request(method, path, body)
+            headers = {"Authorization": "Bearer " + self.token} if self.token else {}
+            client.request(method, path, body, headers)
             response = client.getresponse()
             raw = response.read()
             data = json.loads(raw) if "json" in response.getheader("Content-Type", "") else raw.decode()
@@ -86,14 +95,25 @@ class WorkflowTests(unittest.TestCase):
         self.request("/api/import/file", path.read_bytes())
         self.request("/api/snapshot/finish")
 
-    def preflight(self, **payload):
-        return self.request("/api/workflow/preflight", {"question": QUESTION, **payload})
+    def preflight(self, status=200, **payload):
+        return self.request("/api/workflow/preflight", {"question": QUESTION, **payload}, status=status)
 
     def run_review(self, prepared, status=200):
         return self.request("/api/workflow/run", {
             "confirmed": True, "context": prepared["context"],
             "confirmation_token": prepared["confirmation_token"],
         }, status=status)
+
+    def login_as(self, group, roles=None):
+        password = secrets.token_urlsafe(24)
+        set_account(self.accounts, group, group, password, roles)
+        self.state.accounts.path = self.accounts
+        self.token = self.request("/api/account/login", {"username": group, "password": password})["token"]
+
+    def switch(self, role):
+        response = self.request("/api/account/role", {"role": role})
+        self.token = response["token"]
+        self.assertEqual(response["identity"]["active_role"], role)
 
     def engineering_run(self):
         return self.run_review(self.preflight(role="engineering", question="2026-12-01 把 PART-OLD 换成 PART-NEW"))["run_id"]
@@ -114,8 +134,10 @@ class WorkflowTests(unittest.TestCase):
         return self.request(self.knowledge_url(run_id, "/index"), {**reviewed, "approved": True})
 
     def test_confirmed_workflow_selects_the_same_analysis_for_views_and_reload(self):
+        self.login_as("engineering", ("engineering", "procurement"))
         self.import_bom()
         for role, new_part in (("engineering", "PART-NEW"), ("procurement", "PART-FINAL")):
+            self.switch(role)
             prepared = self.preflight(role=role, draft={"new_component": new_part})
             run = self.request("/api/workflow/run", {
                 "context": prepared["context"], "confirmation_token": prepared["confirmation_token"],
@@ -130,15 +152,41 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(self.request("/api/report.md", method="GET"), selected["report"])
             self.assertNotIn("analysis", self.request("/api/workflow/run", method="GET"))
 
+    def test_legacy_ppt_preview_preserves_source_and_requires_engineering_account(self):
+        self.login_as("engineering")
+        self.import_bom()
+        run = self.engineering_run()
+        upload = bytes.fromhex("D0CF11E0A1B11AE1") + b"synthetic test input"
+        url = self.knowledge_url(run, "/preview") + "&kind=ppt"
+        self.request(url, b"not a legacy PPT", status=400)
+
+        def convert(command, **options):
+            (options["cwd"] / "material.pptx").write_bytes(presentation())
+
+        self.state.legacy_ppt_converter = self.root / "synthetic-soffice"
+        with patch("bom_change_assistant.knowledge.subprocess.run", side_effect=convert) as converter:
+            parsed = self.request(url, upload)
+            converter.assert_called_once()
+            self.login_as("procurement", ("engineering",))
+            self.request(url, upload, status=403)
+            converter.assert_called_once()
+
+        self.assertEqual(parsed["kind"], "ppt")
+        self.assertEqual(parsed["digest"], hashlib.sha256(upload).hexdigest())
+        self.assertEqual(parsed["page_count"], 2)
+        self.login_as("engineering")
+        indexed = self.request(self.knowledge_url(run, "/index"),
+                               {**parsed, "excerpts": [parsed["excerpts"][0]], "approved": True})
+        self.assertTrue(indexed["source_id"].startswith("PPT-"))
+        self.assertEqual(indexed["indexed"], 1)
+
     def test_knowledge_is_separate_from_standard_workflow_and_download(self):
+        self.login_as("engineering", ("procurement", "engineering"))
         self.import_bom()
         before = self.preflight()
         self.assertTrue(before["ready"], before)
         self.assertEqual(before["context"]["draft"]["effective_date"], "2026-12-01")
         self.assertEqual(before["context"]["role"], "procurement")
-        engineering_id = self.engineering_run()
-        self.assertEqual(self.request(self.knowledge_url(engineering_id, "/references"), method="GET")["status"], "empty")
-        doc = self.index_document(engineering_id)
         run = self.run_review(before)
         self.assertTrue(any("PO-P19-001 / 00010" in fact and "剩余承诺 30" in fact for fact in run["answer"]["facts"]))
         self.assertNotIn("knowledge", run)
@@ -149,6 +197,10 @@ class WorkflowTests(unittest.TestCase):
             "/api/workflow/report.md?run_id=" + run["run_id"], method="GET"), run["report"])
         self.assertEqual(self.request("/api/workflow/run?run_id=" + run["run_id"], method="GET"), run)
         self.assertEqual(self.request("/api/workflow/run", method="GET"), run)
+        self.switch("engineering")
+        engineering_id = self.engineering_run()
+        self.assertEqual(self.request(self.knowledge_url(engineering_id, "/references"), method="GET")["status"], "empty")
+        doc = self.index_document(engineering_id)
         outcome = self.request(self.knowledge_url(engineering_id, "/references"), method="GET")
         self.assertEqual(outcome["status"], "retrieved")
         hit, = outcome["matches"]
@@ -160,6 +212,105 @@ class WorkflowTests(unittest.TestCase):
         for run_id, permitted in ((engineering_id, True), (run["run_id"], False)):
             result = self.request("/api/analysis/by-id?analysis_id=" + run_id, method="GET")
             self.assertEqual(result["result"]["engineering_knowledge_available"], permitted)
+
+    def test_provisioning_never_writes_to_the_business_database(self):
+        db = self.state.repository.database_path
+        before = db.read_bytes()
+        with self.assertRaisesRegex(ValueError, "独立的账号库"):
+            set_account(db, "operator", "engineering", secrets.token_urlsafe(24))
+        self.assertEqual(db.read_bytes(), before)
+
+    def test_engineering_membership_and_engineering_run_are_both_required(self):
+        self.import_bom()
+        self.login_as("engineering")
+        engineer_run = self.engineering_run()
+        self.index_document(engineer_run)
+        self.login_as("procurement")
+        self.request("/api/account/role", {"role": "engineering"}, status=403)
+        self.preflight(role="engineering", status=403)
+        prepared = self.preflight()
+        self.assertEqual(prepared["context"]["role"], "procurement")
+        chosen = self.request("/api/workflow/run", {
+            "context": prepared["context"], "confirmation_token": prepared["confirmation_token"],
+            "confirmed": True, "include_analysis": True,
+        })
+        self.assertFalse(chosen["analysis"]["result"]["engineering_knowledge_available"])
+        for run_id in (chosen["run_id"], engineer_run):
+            result = self.request("/api/analysis/by-id?analysis_id=" + run_id, method="GET")
+            self.assertFalse(result["result"]["engineering_knowledge_available"])
+            for route, method in (("", "GET"), ("/references", "GET"), ("/preview", "POST"), ("/index", "POST")):
+                denied = self.request(self.knowledge_url(run_id, route), method=method, status=403)
+                self.assertNotIn(REVIEWED, str(denied))
+
+    def test_sessions_fail_closed_after_logout_expiry_and_account_change(self):
+        self.import_bom()
+        run = self.engineering_run()
+        route = self.knowledge_url(run)
+        self.request(route, method="GET", status=403)
+        self.request("/api/account/login", {"username": "unknown", "password": "invalid"}, status=401)
+        self.login_as("engineering")
+        self.request(route, method="GET")
+        self.request("/api/account/logout")
+        self.request(route, method="GET", status=403)
+        self.login_as("engineering")
+        session = self.state.accounts.sessions[self.token]
+        self.state.accounts.sessions[self.token] = replace(session, deadline=0)
+        self.request(route, method="GET", status=403)
+        self.login_as("engineering")
+        set_account(self.accounts, "engineering", "procurement", secrets.token_urlsafe(24))
+        self.request(route, method="GET", status=403)
+        self.assertIsNone(self.request("/api/account", method="GET")["identity"])
+
+    def test_roles_are_session_scoped_and_never_inferred_from_the_question(self):
+        self.import_bom()
+        self.login_as("engineering", ("engineering", "procurement"))
+        prepared = self.preflight()
+        self.assertEqual(prepared["context"]["role"], "engineering")
+        self.assertTrue(prepared["ready"])
+        old_token = self.token
+        run_id = self.run_review(prepared)["run_id"]
+        route = self.knowledge_url(run_id, "/references")
+        self.index_document(run_id)
+        engineer_report = self.request("/api/report.md?analysis_id=" + run_id, method="GET")
+
+        self.switch("procurement")
+        current_token = self.token
+        self.assertNotEqual(old_token, current_token)
+        self.assertFalse(self.request("/api/analysis/by-id?analysis_id=" + run_id,
+                                      method="GET")["result"]["engineering_knowledge_available"])
+        self.request(route, method="GET", status=403)
+        self.run_review(prepared, 403)
+        self.preflight(role="engineering", status=403)
+        self.token = old_token
+        self.request(route, method="GET", status=403)
+        self.preflight(status=401)
+        self.token = current_token
+
+        self.switch("engineering")
+        self.run_review(prepared, 400)
+        self.assertEqual(self.request(route, method="GET")["status"], "retrieved")
+        self.login_as("procurement", ("procurement", "engineering"))
+        self.switch("engineering")
+        self.request(route, method="GET", status=403)
+        self.assertEqual(self.request("/api/report.md?analysis_id=" + run_id, method="GET"), engineer_report)
+        self.assertNotIn(REVIEWED, engineer_report)
+
+    def test_legacy_accounts_are_read_only_and_keep_their_department_defaults(self):
+        salt = secrets.token_bytes(16)
+        password = secrets.token_urlsafe(24)
+        digest = password_key(password, salt)
+        with sqlite3.connect(self.accounts) as db:
+            db.execute("CREATE TABLE accounts (name TEXT PRIMARY KEY, department TEXT, salt BLOB, digest BLOB)")
+            db.executemany("INSERT INTO accounts VALUES (?, ?, ?, ?)", [
+                (group, group, salt, digest) for group in ("engineering", "procurement", "other")
+            ])
+        db.close()
+        before = self.accounts.read_bytes()
+        store = Accounts(self.accounts)
+        for group, expected in (("engineering", "engineering"), ("procurement", "procurement"), ("other", "rd")):
+            identity = store.identity(store.login(group, password))
+            self.assertEqual((identity["roles"], identity["active_role"]), ((expected,), expected))
+        self.assertEqual(self.accounts.read_bytes(), before)
 
     def test_legacy_workflow_reports_hide_stored_knowledge_without_rewriting_rows(self):
         self.import_bom()
@@ -208,6 +359,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn(identifier, result["report"])
 
     def test_reject_changed_input_and_snapshot_preserve_index(self):
+        self.login_as("engineering")
         self.import_bom()
         self.index_document(self.engineering_run())
         prepared = self.preflight()
@@ -222,6 +374,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.request(self.knowledge_url(self.engineering_run()), method="GET")["documents"], 1)
 
     def test_no_related_slide_and_invalid_file(self):
+        self.login_as("engineering")
         self.import_bom()
         run_id = self.engineering_run()
         self.request(self.knowledge_url(run_id, "/preview"), b"NOT A PRESENTATION", status=400)

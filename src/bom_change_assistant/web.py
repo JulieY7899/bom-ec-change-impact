@@ -19,7 +19,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from zipfile import BadZipFile
 
-from . import BUILD_ID, __version__, engineering, knowledge, workflow, workflow_dialogue
+from . import BUILD_ID, __version__, engineering, knowledge, knowledge_store, workflow, workflow_dialogue
+from .accounts import Accounts
 from .config import (
     DATABASE_PATH,
     HOST,
@@ -64,7 +65,11 @@ SNAPSHOT_BACKUPS_TO_KEEP = 3
 
 
 class AppState:
-    def __init__(self, database_path: Path):
+    def __init__(self, database_path: Path, accounts_path: Path | None = None):
+        if accounts_path and database_path.resolve() == accounts_path.resolve():
+            raise ValueError("账号库和业务数据库须使用独立文件")
+        self.accounts = Accounts(accounts_path)
+        self.legacy_ppt_converter = None
         self.repository = Repository(database_path)
         self.analysis = AnalysisService(self.repository)
         # Keep analysis and publication consistent without locking around network I/O.
@@ -187,8 +192,8 @@ class Download:
 
 
 JSON_POSTS = frozenset({
-    "/api/workflow/dialogue", "/api/workflow/preflight", "/api/workflow/run",
-    "/api/engineering-knowledge/index", "/api/snapshot/start", "/api/analyze", "/api/analyze-batch",
+    "/api/account/login", "/api/account/logout", "/api/account/role", "/api/workflow/dialogue", "/api/workflow/preflight", "/api/workflow/run",
+    "/api/engineering-knowledge/index", "/api/engineering-knowledge/references", "/api/snapshot/start", "/api/analyze", "/api/analyze-batch",
 })
 COMMAND_POSTS = frozenset({"/api/snapshot/finish", "/api/snapshot/abort", "/api/demo"})
 IMPORT_POSTS = frozenset({"/api/import/file", "/api/snapshot/finish", "/api/snapshot/abort"})
@@ -321,6 +326,8 @@ class Handler(BaseHTTPRequestHandler):
         path = route.path
         repository = self.state.repository
         query = parse_qs(route.query)
+        if path == "/api/account":
+            return {"configured": self.state.accounts.path is not None, "identity": self._identity()}
         if path == "/api/status":
             return {
                 **repository.stats(), "privacy_mode": "敏感文字脱敏",
@@ -349,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestError(404, "尚未完成影响核查")
             result, _ = latest
             report = markdown_report(result, str(result.get("ai_explanation", "")))
-            can_use_knowledge = workflow.engineering_context(repository, result["analysis_id"]) is not None
+            can_use_knowledge = self._is_engineer() and workflow.engineering_context(repository, result["analysis_id"]) is not None
             return {"result": {**result, "engineering_knowledge_available": can_use_knowledge}, "report": report}
         if path == "/api/change-log":
             return {"items": repository.change_logs()}
@@ -357,9 +364,12 @@ class Handler(BaseHTTPRequestHandler):
             return repository.draft_defaults()
         if path in {"/api/engineering-knowledge", "/api/engineering-knowledge/references"}:
             context = self._engineering_knowledge_context(route)
-            if path.endswith("/references"):
-                return workflow.engineering_references(repository, context)
-            return knowledge.library(repository)
+            try:
+                if path.endswith("/references"):
+                    return workflow.engineering_references(repository, context)
+                return knowledge_store.library(repository)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                raise RequestError(503, "本机工程知识库暂不可用，请检查文件及其权限") from exc
         if path in {"/api/workflow/run", "/api/workflow/report.md"}:
             run_id = query.get("run_id", [""])[0]
             saved = workflow.get_run(repository, run_id)
@@ -422,7 +432,28 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, body, content_types.get(path.suffix, "application/octet-stream"))
 
+    def _session_token(self):
+        header = self.headers.get("Authorization", "")
+        return header[7:] if header.startswith("Bearer ") else ""
+
+    def _identity(self):
+        return self.state.accounts.identity(self._session_token())
+
+    def _is_engineer(self):
+        identity = self._identity()
+        return bool(identity and identity["department"] == identity["active_role"] == "engineering")
+
+    def _workflow_identity(self):
+        if self.state.accounts.path is None:
+            return None
+        identity = self._identity()
+        if not identity:
+            raise RequestError(401, "请从右上角登录账号")
+        return identity
+
     def _engineering_knowledge_context(self, route):
+        if not self._is_engineer():
+            raise RequestError(403, "需要使用工程部门账号并切换至工程角色")
         run_id = parse_qs(route.query).get("analysis_id", [""])[0]
         context = workflow.engineering_context(self.state.repository, run_id)
         if context is None:
@@ -447,6 +478,9 @@ class Handler(BaseHTTPRequestHandler):
         # a late file or malformed request from affecting a replacement batch.
         batch = None
         try:
+            if ppt or path in {"/api/engineering-knowledge/index", "/api/engineering-knowledge/references"}:
+                with self.state.import_lock:
+                    self._engineering_knowledge_context(route)
             if path in IMPORT_POSTS:
                 requested_batch = self.headers.get("X-BOM-Import-Batch")
                 with self.state.import_lock:
@@ -517,27 +551,64 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post_locked(self, route, payload, upload_path):
         path = route.path
+        if path == "/api/account/login":
+            token = self.state.accounts.login(payload.get("username"), payload.get("password"))
+            if token is None:
+                raise RequestError(401, "账号或口令无效")
+            self.state.accounts.logout(self._session_token())
+            return {"token": token}
+        if path == "/api/account/logout":
+            self.state.accounts.logout(self._session_token())
+            return {}
+        if path == "/api/account/role":
+            identity = self._workflow_identity()
+            if not identity or payload.get("role") not in identity["roles"]:
+                raise RequestError(403, "此账号未获该角色授权")
+            role = payload["role"]
+            token = self.state.accounts.switch_role(self._session_token(), identity, role)
+            return {"token": token, "identity": {**identity, "active_role": role}}
         if path == "/api/workflow/dialogue":
             return workflow_dialogue.collect(payload.get("messages"))
         if path == "/api/workflow/preflight":
             self.state.require_no_import()
-            return workflow.prepare(self.state.repository, payload)
+            identity = self._workflow_identity()
+            if identity:
+                role = identity["active_role"]
+                if payload.get("role") not in (None, "", role):
+                    raise RequestError(403, "核查角色须与当前账号角色一致")
+                payload = {**payload, "role": role}
+            return workflow.prepare(self.state.repository, payload,
+                                    session_scope=self._session_token() if identity else "")
         if path == "/api/workflow/run":
             self.state.require_no_import()
-            context = workflow.confirm(self.state.repository, payload)
+            identity = self._workflow_identity()
+            requested = payload.get("context")
+            if identity and isinstance(requested, dict) and requested.get("role") != identity["active_role"]:
+                raise RequestError(403, "核查角色已切换，请重新预检")
+            context = workflow.confirm(self.state.repository, payload,
+                                       session_scope=self._session_token() if identity else "")
             defaults = self.state.repository.draft_defaults()
             draft = {**context["draft"], "bom_version": defaults["default_bom_version"]}
             item = self.state.analysis.analyze_changes([draft])["items"][0]
             output = workflow.finish(self.state.repository, context, item)
             if payload.get("include_analysis") is True:
                 output["analysis"] = {
-                    "result": {**item["result"], "engineering_knowledge_available": context["role"] == "engineering"},
+                    "result": {**item["result"], "engineering_knowledge_available": context["role"] == "engineering" and self._is_engineer()},
                     "report": item["report"],
                 }
             return output
+        if path == "/api/engineering-knowledge/references":
+            context = self._engineering_knowledge_context(route)
+            return workflow.engineering_references(self.state.repository, context, payload.get("query", ""),
+                                                   payload.get("section", ""))
         if path in {"/api/engineering-knowledge/preview", "/api/engineering-knowledge/index"}:
             self._engineering_knowledge_context(route)
             if path.endswith("/preview"):
+                kind = parse_qs(route.query).get("kind")
+                if kind == ["ppt"]:
+                    return knowledge.preview_legacy(self.state.repository, payload, self.state.legacy_ppt_converter)
+                if kind == ["text"]:
+                    return knowledge.preview_text(self.state.repository, payload)
                 return knowledge.preview(self.state.repository, payload)
             self.state.require_no_import()
             return knowledge.index(self.state.repository, payload)
@@ -585,8 +656,15 @@ def run_server(
     port: int = PORT,
     database_path: Path = DATABASE_PATH,
     open_browser: bool = True,
+    accounts_path: Path | None = None,
+    knowledge_model: Path | None = None,
+    legacy_ppt_converter: Path | None = None,
 ) -> None:
-    state = AppState(database_path)
+    state = AppState(database_path, accounts_path)
+    state.legacy_ppt_converter = legacy_ppt_converter.resolve() if legacy_ppt_converter else None
+    if knowledge_model is not None:
+        from .semantic_index import SemanticIndex
+        state.repository.semantic_index = SemanticIndex(database_path.with_name(database_path.name + ".qdrant"), knowledge_model)
     handler = type("BoundHandler", (Handler,), {"state": state})
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("隐私优先版本不允许监听非本机地址")
@@ -609,13 +687,19 @@ def main() -> None:
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--database", type=Path, default=DATABASE_PATH)
+    parser.add_argument("--accounts", type=Path, help="本机管理员维护的账号库路径")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--knowledge-model", type=Path, help="启用本机 Qdrant 工程语义检索，指定已校验的中文模型目录")
+    parser.add_argument("--legacy-ppt-converter", type=Path, help="PowerPoint 97–2003 文件的本机 soffice 路径")
     args = parser.parse_args()
     run_server(
         host=args.host,
         port=args.port,
         database_path=args.database,
         open_browser=not args.no_browser,
+        accounts_path=args.accounts,
+        knowledge_model=args.knowledge_model,
+        legacy_ppt_converter=args.legacy_ppt_converter,
     )
 
 

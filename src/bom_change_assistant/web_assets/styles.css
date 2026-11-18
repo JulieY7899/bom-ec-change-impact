@@ -1627,3 +1627,30 @@ input:focus, select:focus, textarea:focus {
 .workflow-excerpt { border: 1px solid var(--line, #d5dbe4); border-radius: 12px; padding: 12px; margin: 12px 0; }
 #workflow-report { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
 .workflow-knowledge-text { white-space: pre-line; overflow-wrap: anywhere; }
+
+.topbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+.account-panel { position: relative; }
+.topbar-actions .account-panel summary {
+  display: inline-flex;
+  cursor: pointer;
+  max-width: min(240px, 55vw);
+  overflow-wrap: anywhere;
+}
+.account-panel summary::after { content: "▾"; }
+.account-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 5;
+  width: min(260px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel, white);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .12);
+}
+.account-menu form, #account-controls { display: grid; gap: 8px; }
+.account-menu p:empty { display: none; }
+#account-message { margin: 8px 0 0; overflow-wrap: anywhere; }
+#account-role-single { margin: 0; }
+#workflow-active-role { margin: 8px 0 0; }

@@ -34,3 +34,6 @@ examples/sample-result.json
 examples/verification.json
 docs/verification-*.txt
 docs/profile-draft.md
+
+*.qdrant/
+*.onnx

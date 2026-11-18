@@ -56,6 +56,24 @@
         <div class="topbar-actions">
           <span class="status-pill"><i></i><span id="snapshot-state">等待导入</span></span>
           <span class="mode-pill">仅核查 · 不修改 ERP</span>
+          <details id="account-panel" class="account-panel hidden">
+            <summary id="account-label" class="mode-pill">账号登录</summary>
+            <div class="account-menu">
+              <form id="account-login">
+                <label>账号<input name="username" autocomplete="username" maxlength="64" required></label>
+                <label>口令<input name="password" type="password" autocomplete="current-password" maxlength="256" required></label>
+                <button class="button secondary" type="submit">登录</button>
+              </form>
+              <div id="account-controls" class="hidden">
+                <label id="account-role-picker">当前角色
+                  <select id="account-role"></select>
+                </label>
+                <p id="account-role-single" class="hidden"></p>
+                <button class="button secondary" type="button" id="account-logout">退出账号</button>
+              </div>
+              <p id="account-message" role="status"></p>
+            </div>
+          </details>
         </div>
       </header>
 
@@ -96,7 +114,7 @@
             <p class="muted">也可以直接填写或修改字段。完成数据预检后再运行。</p>
           <form id="workflow-form">
             <div class="field-grid">
-              <label>核查角色
+              <label id="workflow-role-local">核查角色
                 <select name="role">
                   <option value="">选择角色</option>
                   <option value="rd">研发</option><option value="procurement">采购</option>
@@ -104,6 +122,10 @@
                   <option value="engineering">工程</option>
                 </select>
               </label>
+              <div id="workflow-role-managed" class="hidden">
+                <strong>核查角色</strong>
+                <p id="workflow-active-role"></p>
+              </div>
               <label>核查范围
                 <select name="analysis_mode">
                   <option value="">默认按物料</option>
@@ -475,17 +497,27 @@
 
         <article class="panel workflow-panel hidden" id="engineering-knowledge">
           <details>
-            <summary>工程辅助分析 · PPT 知识库</summary>
-            <p>按本次工程核查的主题检索已审核的参考材料。</p>
+            <summary>工程辅助分析 · 知识库</summary>
+            <div class="field-grid">
+              <label>检索分区<select id="knowledge-filter"><option value="">全部分区</option></select></label>
+              <label>工程问题<input id="knowledge-query" maxlength="240" placeholder="留空时按本次变更检索"></label>
+            </div>
             <button class="button secondary" type="button" id="engineering-knowledge-search">检索工程知识</button>
             <div id="engineering-knowledge-references" aria-live="polite"></div>
-            <p class="muted" id="workflow-library">读取知识库…</p>
-            <p>选择已脱敏的 PPTX。只索引你勾选并确认的文本摘录，按文档编号和页码引用。</p>
+            <details id="knowledge-catalog"><summary>已入库材料</summary>
+              <p class="muted" id="workflow-library">读取知识库…</p>
+              <div id="knowledge-documents"></div>
+            </details>
+            <p>选择已脱敏的 PPT、PPTX、TXT 或 Markdown，预览后勾选可引用的页或段。</p>
             <div class="action-row">
-              <label>演示文稿<input type="file" id="workflow-ppt" accept=".pptx"></label>
+              <label>工程材料<input type="file" id="workflow-ppt" accept=".ppt,.pptx,.txt,.md"></label>
               <button class="button secondary" type="button" id="workflow-preview">提取文本并预览</button>
             </div>
             <form id="workflow-index" class="hidden">
+              <div class="field-grid">
+                <label>存放分区<select id="knowledge-section" required></select></label>
+                <label>脱敏标题（可选）<input id="knowledge-title" maxlength="80"></label>
+              </div>
               <div id="workflow-excerpts"></div>
               <label class="workflow-check"><input type="checkbox" id="workflow-approved" required>我已核对勾选的摘录，摘录可用于工程辅助分析</label>
               <button class="button primary" type="submit" id="workflow-save">加入知识库</button>

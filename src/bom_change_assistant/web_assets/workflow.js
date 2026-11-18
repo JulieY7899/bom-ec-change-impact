@@ -47,7 +47,7 @@ function setupWorkflow() {
     draftRevision++;
     runButton.disabled = true;
     openPreparation.classList.add("hidden");
-    prepareButton.disabled = false;
+    prepareButton.disabled = state.accountChanging;
     dataPlan.classList.add("hidden");
     preflight.textContent = message;
     refreshFields();
@@ -106,6 +106,8 @@ function setupWorkflow() {
   });
 
   form.addEventListener("input", () => invalidateDraft());
+  document.addEventListener("bom-role-changing", () => invalidateDraft("正在切换角色…"));
+  document.addEventListener("bom-role-changed", () => invalidateDraft("请按当前角色重新预检。"));
   document.addEventListener("bom-snapshot-replaced", () => {
     prepared = null;
     draftRevision++;
@@ -142,6 +144,7 @@ function setupWorkflow() {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (state.accountChanging) return;
     const { role, ...draft } = Object.fromEntries(new FormData(form));
     const supplied = Object.fromEntries(Object.entries(draft).filter(([name, value]) =>
       value !== "" && !form.elements[name].closest("label").hidden));
@@ -187,15 +190,17 @@ function setupWorkflow() {
       showResult(data);
       preflight.textContent = "核查已完成 · " + data.run_id;
     } catch (error) {
-      preflight.textContent = error.message;
+      if (revision === draftRevision) preflight.textContent = error.message;
     }
   });
 
   $("#workflow-open-analysis").addEventListener("click", async () => {
     const run = displayedRun;
+    const revision = state.accountRevision;
+    if (state.accountChanging) return;
     try {
       const item = await api("/api/analysis/by-id?analysis_id=" + encodeURIComponent(run));
-      if (run !== displayedRun || output.classList.contains("hidden")) return;
+      if (revision !== state.accountRevision || run !== displayedRun || output.classList.contains("hidden")) return;
       state.batchItems = [item];
       selectBatchItem(0);
       showView("analysis");
@@ -226,34 +231,77 @@ function setupEngineeringKnowledge(post, element) {
   const knowledgeStatus = $("#workflow-knowledge-status");
   const references = $("#engineering-knowledge-references");
   const search = $("#engineering-knowledge-search");
+  const filter = $("#knowledge-filter");
+  const question = $("#knowledge-query");
+  const section = $("#knowledge-section");
+  let searchRevision = 0;
+  let libraryRevision = 0;
+  function clearSearch() {
+    searchRevision++;
+    references.replaceChildren();
+    search.disabled = false;
+  }
+  question.addEventListener("input", clearSearch);
+  filter.addEventListener("change", clearSearch);
   let activeId = "";
   let preview = null;
 
   const endpoint = (path, id) => "/api/engineering-knowledge" + path + "?analysis_id=" + encodeURIComponent(id);
 
   function reset() {
+    libraryRevision++;
     activeId = "";
+    clearSearch();
+    question.value = "";
+    filter.value = "";
     panel.classList.add("hidden");
     panel.querySelector("details").open = false;
     clearPreview();
+    previewButton.disabled = false;
+    $("#workflow-save").disabled = false;
     pptInput.value = "";
     knowledgeStatus.textContent = "";
+    $("#knowledge-documents").replaceChildren();
+    $("#knowledge-catalog").open = false;
+    library.textContent = "";
+    section.replaceChildren();
+    filter.replaceChildren(new Option("全部分区", ""));
     references.replaceChildren();
   }
 
-  function isCurrent(id) {
-    return id && id === activeId && state.result?.analysis_id === id;
+  function isCurrent(id, revision) {
+    return revision === libraryRevision && id && id === activeId && state.result?.analysis_id === id;
   }
 
   async function showLibrary() {
     const id = activeId;
+    const revision = libraryRevision;
     try {
       const data = await api(endpoint("", id));
-      if (!isCurrent(id)) return;
-      library.textContent = data.documents + " 份文稿 · " + data.excerpts + " 页已审核摘录";
+      if (!isCurrent(id, revision)) return;
+      const selectedFilter = filter.value;
+      const selectedSection = section.value;
+      filter.replaceChildren(new Option("全部分区", ""));
+      section.replaceChildren();
+      for (const zone of data.sections) {
+        filter.add(new Option(zone.label + "（" + zone.documents + "）", zone.id));
+        section.add(new Option(zone.label, zone.id));
+      }
+      filter.value = selectedFilter;
+      if (selectedSection) section.value = selectedSection;
+      const catalog = $("#knowledge-documents");
+      catalog.replaceChildren();
+      for (const zone of data.sections.filter(item => item.documents)) {
+        catalog.append(element("h4", zone.label));
+        for (const item of data.inventory.filter(doc => doc.section === zone.id)) {
+          catalog.append(element("p", [item.title, item.source_id, item.chunks + " 个片段"].filter(Boolean).join(" · ")));
+        }
+      }
+      library.textContent = data.documents + " 份材料 · " + data.chunks + " 个已审核片段"
+        + (data.method.startsWith("qdrant-local") ? " · Qdrant 本机中文语义检索" : "");
       panel.classList.remove("hidden");
     } catch (error) {
-      if (isCurrent(id)) reset();
+      if (isCurrent(id, revision)) reset();
     }
   }
 
@@ -269,29 +317,35 @@ function setupEngineeringKnowledge(post, element) {
   document.addEventListener("bom-analysis-view", refresh);
   document.addEventListener("bom-analysis-rendered", refresh);
   document.addEventListener("bom-snapshot-replaced", reset);
+  document.addEventListener("bom-knowledge-denied", reset);
 
   search.addEventListener("click", async () => {
     const id = activeId;
+    const revision = libraryRevision;
+    const request = ++searchRevision;
     search.disabled = true;
     references.textContent = "正在检索已审核的工程知识…";
     try {
-      const data = await api(endpoint("/references", id));
-      if (!isCurrent(id)) return;
+      const url = endpoint("/references", id);
+      const query = question.value.trim();
+      const data = query || filter.value ? await post(url, {query, section: filter.value}) : await api(url);
+      if (!isCurrent(id, revision) || request !== searchRevision) return;
       references.replaceChildren();
       for (const hit of data.matches) {
         const block = element("div", "");
         block.className = "workflow-excerpt";
         const text = element("p", hit.text);
         text.className = "workflow-knowledge-text";
-        block.append(element("strong", hit.source_id + " 第 " + hit.slide + " 页"), text);
+        const position = "第 " + hit.slide + (hit.kind === "text" ? " 段" : " 页") + " · 片段 " + hit.chunk;
+        block.append(element("strong", [hit.section_label, hit.title, hit.source_id, position].filter(Boolean).join(" · ")), text);
         references.append(block);
       }
       if (!data.matches.length) references.textContent = data.status === "empty"
-        ? "本机工程知识库还没有已审核的摘录。" : "本次没有检索到相关页。";
+        ? "当前范围还没有已审核材料。" : "本次没有检索到相关片段。";
     } catch (error) {
-      if (isCurrent(id)) references.textContent = error.message;
+      if (isCurrent(id, revision) && request === searchRevision) references.textContent = error.message;
     } finally {
-      search.disabled = false;
+      if (request === searchRevision) search.disabled = false;
     }
   });
 
@@ -311,21 +365,25 @@ function setupEngineeringKnowledge(post, element) {
     clearPreview();
     const file = pptInput.files[0];
     const id = activeId;
-    if (!file || !file.name.toLowerCase().endsWith(".pptx")) {
-      knowledgeStatus.textContent = "请选择一个 .pptx 文件。";
+    const revision = libraryRevision;
+    if (!file || !/\.(pptx?|txt|md)$/i.test(file.name)) {
+      knowledgeStatus.textContent = "请选择 PPT、PPTX、TXT 或 Markdown 文件。";
       return;
     }
     previewButton.disabled = true;
     knowledgeStatus.textContent = "正在本机提取文本…";
     try {
-      const data = await api(endpoint("/preview", id), { method: "POST", body: file });
-      if (!isCurrent(id) || file !== pptInput.files[0]) return;
+      const isText = /\.(txt|md)$/i.test(file.name);
+      const unit = isText ? " 段" : " 页";
+      const format = isText ? "&kind=text" : /\.ppt$/i.test(file.name) ? "&kind=ppt" : "";
+      const data = await api(endpoint("/preview", id) + format, { method: "POST", body: file });
+      if (!isCurrent(id, revision) || file !== pptInput.files[0]) return;
       preview = data;
       for (const item of data.excerpts) {
         const block = document.createElement("div");
         block.className = "workflow-excerpt";
         block.dataset.slide = item.slide;
-        const label = element("label", "索引第 " + item.slide + " 页" + (item.truncated ? "（预览已截断）" : ""));
+        const label = element("label", "索引第 " + item.slide + unit + (item.truncated ? "（预览已截断）" : ""));
         label.className = "workflow-check";
         const checked = document.createElement("input");
         checked.type = "checkbox";
@@ -334,16 +392,16 @@ function setupEngineeringKnowledge(post, element) {
         textarea.value = item.text;
         textarea.rows = 3;
         textarea.maxLength = 1200;
-        textarea.setAttribute("aria-label", "第 " + item.slide + " 页摘录");
+        textarea.setAttribute("aria-label", "第 " + item.slide + unit + "摘录");
         block.append(label, textarea);
         excerpts.append(block);
       }
       indexForm.classList.remove("hidden");
-      knowledgeStatus.textContent = "请编辑并勾选可进入知识库的摘录。";
+      knowledgeStatus.textContent = "请确认存放分区并勾选可入库的摘录。";
     } catch (error) {
-      if (isCurrent(id)) knowledgeStatus.textContent = error.message;
+      if (isCurrent(id, revision)) knowledgeStatus.textContent = error.message;
     } finally {
-      previewButton.disabled = false;
+      if (isCurrent(id, revision)) previewButton.disabled = false;
     }
   });
 
@@ -354,27 +412,29 @@ function setupEngineeringKnowledge(post, element) {
       .filter((block) => block.querySelector("input").checked)
       .map((block) => ({ slide: Number(block.dataset.slide), text: block.querySelector("textarea").value }));
     if (!picked.length) {
-      knowledgeStatus.textContent = "请选择至少一页。";
+      knowledgeStatus.textContent = "请至少勾选一项摘录。";
       return;
     }
     const id = activeId;
+    const revision = libraryRevision;
     const { digest, slides, page_count, review_token } = preview;
     const save = $("#workflow-save");
     save.disabled = true;
     try {
       const data = await post(endpoint("/index", id), {
-        digest, slides, page_count, review_token, approved: approved.checked, excerpts: picked,
+        digest, slides, page_count, review_token, ...(preview.kind ? {kind: preview.kind} : {}),
+        section: section.value, title: $("#knowledge-title").value, approved: approved.checked, excerpts: picked,
       });
-      if (!isCurrent(id)) return;
-      references.replaceChildren();
-      knowledgeStatus.textContent = "已加入 " + data.indexed + " 页 · " + data.source_id;
+      if (!isCurrent(id, revision)) return;
+      clearSearch();
+      knowledgeStatus.textContent = "已加入 " + data.indexed_chunks + " 个片段 · " + data.source_id;
       clearPreview();
       pptInput.value = "";
       showLibrary();
     } catch (error) {
-      if (isCurrent(id)) knowledgeStatus.textContent = error.message;
+      if (isCurrent(id, revision)) knowledgeStatus.textContent = error.message;
     } finally {
-      save.disabled = false;
+      if (isCurrent(id, revision)) save.disabled = false;
     }
   });
 

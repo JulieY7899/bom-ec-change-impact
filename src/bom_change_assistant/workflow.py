@@ -7,7 +7,7 @@ import re
 import unicodedata
 from datetime import date
 
-from . import engineering, knowledge, procurement
+from . import engineering, knowledge, knowledge_store, procurement
 from .normalization import coerce_date, coerce_number
 
 CONTRACT = "bom-workflow-v1"
@@ -359,7 +359,7 @@ def _data_preparation(repository, context):
     return {"fields": fields, "sources": sources}
 
 
-def prepare(repository, payload):
+def prepare(repository, payload, *, session_scope=""):
     if not isinstance(payload, dict):
         raise ValueError("核查输入须为对象")
     question = payload.get("question") or ""
@@ -394,15 +394,15 @@ def prepare(repository, payload):
                "focus": [word for word in FOCUSES if word in supplied_focus or word.casefold() in question.casefold()],
                "issues": issues}
     return {"ready": ready, "context": context, "data_preparation": _data_preparation(repository, context),
-            "confirmation_token": knowledge.sign(repository, "workflow", context) if ready else ""}
+            "confirmation_token": knowledge.sign(repository, "workflow" + session_scope, context) if ready else ""}
 
 
-def confirm(repository, payload):
+def confirm(repository, payload, *, session_scope=""):
     context = payload.get("context")
     if (
         payload.get("confirmed") is not True or not isinstance(context, dict)
         or context.get("contract") != CONTRACT
-        or not knowledge.signed(repository, "workflow", context, payload.get("confirmation_token"))
+        or not knowledge.signed(repository, "workflow" + session_scope, context, payload.get("confirmation_token"))
     ):
         raise ValueError("请先预检并确认核查参数")
     if context["snapshot"]["id"] != _snapshot(repository)["id"]:
@@ -569,6 +569,14 @@ def engineering_context(repository, run_id):
     return context if context and context["role"] == "engineering" else None
 
 
-def engineering_references(repository, context):
-    terms = [ROLES["engineering"][1], *context["focus"], CHANGE_TYPES[context["draft"]["change_type"]]]
-    return knowledge.retrieve(repository, " ".join(terms))
+def engineering_references(repository, context, query="", section=""):
+    if not isinstance(query, str):
+        raise ValueError("搜索问题须为文本")
+    automatic = not query.strip()
+    if automatic:
+        draft = context["draft"]
+        terms = [ROLES["engineering"][1], *context["focus"], CHANGE_TYPES[draft["change_type"]]]
+        terms.extend(str(draft.get(k) or "") for k in
+                     ("old_component", "new_component", "engineering_version", "target_bom_row"))
+        query = " ".join(terms)[:240]
+    return knowledge_store.retrieve(repository, query, section, context_query=automatic)

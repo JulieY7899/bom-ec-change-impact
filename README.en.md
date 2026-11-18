@@ -6,6 +6,8 @@
 
 V1.2-B19 procurement commitments, receipts, returns and reversals remain available. [Procurement import guide](docs/procurement.md)
 
+With a local account database configured, sign in from the top-right account menu. The role picker lists the roles granted to that account. Switching roles keeps draft fields, clears the previous preflight and removes any displayed knowledge excerpts. In **03 Impact Review**, an engineering-department account using the Engineering role can open a completed engineering review and work with a local knowledge library. Choose a redacted PPT, PPTX, Markdown or TXT file, review the excerpts, select a section and index the approved text. Search the selected section or the entire library. Enable Qdrant Local for on-device Chinese semantic search. Downloads use the original review record and exclude library content. [Workflow guide (Chinese)](docs/workflow.md#03-影响核查中的工程辅助分析) · [Local semantic search setup (Chinese)](docs/engineering-semantic.md)
+
 
 **Local decision support for engineering change reviews**
 
@@ -79,7 +81,7 @@ Use a separate project directory for your first demo, then select “载入虚�
 python3 app.py --database data/portfolio-demo.sqlite3
 ```
 
-An empty Excel import template is available in the application. Use synthetic data for public demonstrations and repository submissions.
+An empty Excel import template is available in the application. Use synthetic data for public demonstrations and repository submissions. Start the app with `--accounts <local-account-database>` to enable sign-in. [Independent demo setup (Chinese)](docs/workflow.md#本机配置示例)
 
 ## Verify
 
