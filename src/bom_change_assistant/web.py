@@ -17,8 +17,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from zipfile import BadZipFile
 
-from . import BUILD_ID, __version__
+from . import BUILD_ID, __version__, engineering
 from .ai import AIUnavailable, explain_with_openai
 from .config import (
     DATABASE_PATH,
@@ -119,10 +120,7 @@ class AppState:
         if self.expected_files is not None and self.imported_files != self.expected_files:
             raise ValueError("导入文件数不完整；旧快照保持可用")
         stage = self.staging_repository
-        with stage.connect() as connection:
-            if not connection.execute("SELECT 1 FROM bom_edges WHERE date_valid=1 LIMIT 1").fetchone():
-                raise ValueError("新快照没有有效 BOM 关系；旧快照保持可用")
-        stats = stage.finish_snapshot()
+        stats = stage.finish_snapshot(require_bom=True)
         # Preserve the previous active database, including its analysis history.
         # This file is local runtime data and must never enter a public commit.
         with tempfile.NamedTemporaryFile(
@@ -225,6 +223,11 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._json(200, payload)
             return
+        if route.path == "/api/engineering-versions":
+            with self.state.repository.connect() as connection:
+                catalog = engineering.VersionSnapshot(connection).catalog()
+            self._json(200, {"ok": True, "versions": catalog})
+            return
         if route.path == "/api/materials":
             query = parse_qs(route.query).get("q", [""])[0]
             self._json(
@@ -291,19 +294,27 @@ class Handler(BaseHTTPRequestHandler):
                 attachment="BOM-impact-report.md",
             )
             return
-        if route.path in {"/api/import-template.xlsx", "/api/procurement-template.xlsx"}:
-            template = (TEMPLATE_PATH.parent.parent / "b19-import-template" / "B19采购与到货导入示例.xlsx"
-                        if route.path == "/api/procurement-template.xlsx" else TEMPLATE_PATH)
+        template_files = {
+            "/api/import-template.xlsx": (TEMPLATE_PATH, "BOM-import-template.xlsx"),
+            "/api/procurement-template.xlsx": (
+                TEMPLATE_PATH.parent.parent / "b19-import-template" / "B19采购与到货导入示例.xlsx",
+                "B19-synthetic-import-example.xlsx",
+            ),
+            "/api/engineering-template.xlsx": (
+                TEMPLATE_PATH.parent.parent / "b22-import-template" / "engineering-example.xlsx",
+                "B22-engineering-example.xlsx",
+            ),
+        }
+        if route.path in template_files:
+            template, filename = template_files[route.path]
             try:
                 body = template.read_bytes()
             except FileNotFoundError:
                 self._error(404, "导入模板尚未生成")
                 return
             self._send(
-                200,
-                body,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                attachment="B19-synthetic-import-example.xlsx" if route.path == "/api/procurement-template.xlsx" else "BOM-import-template.xlsx",
+                200, body, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                attachment=filename,
             )
             return
         self._serve_asset(route.path)
@@ -413,7 +424,10 @@ class Handler(BaseHTTPRequestHandler):
             with self.state.import_lock:
                 if self.state.staging_importer is None:
                     raise ValueError("请先开始新的导入批次；旧快照保持可用")
-                result = self.state.staging_importer.import_file(temporary_path)
+                try:
+                    result = self.state.staging_importer.import_file(temporary_path)
+                except BadZipFile as exc:
+                    raise ValueError("文件不是可读取的 XLSX；旧快照保持可用") from exc
                 self.state.imported_files += 1
             self._json(200, {"ok": True, "result": result.to_dict()})
         finally:
@@ -461,6 +475,9 @@ class Handler(BaseHTTPRequestHandler):
         for result, ecn, payload in zip(prepared_results, ecn_values, changes):
             result["procurement_query"] = {k: str(payload.get(k) or "") for k in ("planning_plant", "storage_location")}
             result["ecn"] = ecn
+            if result.get("engineering_check"):
+                result["engineering_check"]["ecn"] = ecn
+                result["engineering_impact"] = engineering.group([result["engineering_check"]])
             from .procurement import analyze as analyze_procurement
             result["procurement_impact"] = analyze_procurement(
                 self.state.repository, [{**result["change"], "change_type": result["change"]["type"],
@@ -484,8 +501,9 @@ class Handler(BaseHTTPRequestHandler):
                     bom_version, draft_id
                 )
             )
+            ordinary = [item for item in version_results if not item.get("engineering_check")]
             combined = self._combine_bom_version_results(
-                draft_id, bom_version, version_results
+                draft_id, bom_version, ordinary or version_results
             )
             from .procurement import analyze as analyze_procurement
             combined["procurement_impact"] = analyze_procurement(
@@ -509,6 +527,17 @@ class Handler(BaseHTTPRequestHandler):
             for checked in combined["change_checks"]:
                 for pending in (checked.get("quantity_impact") or {}).get("pending_paths", []):
                     pending["path_id"] = f"{checked['ecn']}-{pending['path_id']}"
+            engineering_checks = [
+                item["engineering_check"] for item in version_results if item.get("engineering_check")
+            ]
+            if engineering_checks:
+                combined["engineering_impact"] = engineering.group(engineering_checks)
+                combined["engineering_only"] = len(engineering_checks) == len(version_results)
+                combined["ecns"] = [item["ecn"] for item in version_results]
+                combined["ecn"] = "、".join(combined["ecns"])
+                combined["change_item_count"] = len(version_results)
+                combined["change"]["type_label"] = f"{len(version_results)} 项组合变更"
+                combined["summary"] = rule_summary(combined)
             combined_report = markdown_report(combined)
             self.state.repository.save_analysis(
                 combined["analysis_id"], combined, combined_report
@@ -556,7 +585,12 @@ class Handler(BaseHTTPRequestHandler):
             ),
             disposition_note=str(payload.get("disposition_note", "")),
         )
-        result = self.state.engine.analyze(request)
+        if payload.get("analysis_mode") == "engineering" or any(
+            payload.get(field) for field in ("engineering_version", "target_bom_row")
+        ):
+            result = self._engineering_result(payload)
+        else:
+            result = self.state.engine.analyze(request)
         analysis_id = f"AN-{secrets.token_hex(6).upper()}"
         result["analysis_id"] = analysis_id
         result["draft_id"] = draft_id
@@ -565,6 +599,39 @@ class Handler(BaseHTTPRequestHandler):
         result["summary"] = rule_summary(result)
         result["checklists"] = role_checklists(result)
         return result
+
+    def _engineering_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+        check = engineering.analyze(self.state.repository, payload)
+        target = check["target"]
+        parents = list(dict.fromkeys(row["parent"] for row in check["path"]))
+        tops = [check["version"]["product"]] if check["path"] else []
+        return {
+            "engineering_only": True,
+            "engineering_check": check,
+            "change": {
+                "type": check["change_type"],
+                "type_label": engineering.CHANGE_TYPES[check["change_type"]],
+                "target_parent": target["parent"],
+                "old_component": check["old_component"],
+                "new_component": check["new_component"],
+                "effective_date": check["effective_date"],
+            },
+            "metrics": {
+                "direct_parents": int(bool(parents)), "all_parents": len(parents),
+                "direct_children": 0, "all_children": 0, "downstream_paths": 0,
+                "upstream_paths": int(bool(check["path"])), "top_materials": len(tops),
+                "sales_order_items": 0, "production_orders": 0,
+            },
+            "directions": {"upstream": {"paths": []}, "downstream": {"paths": []}},
+            "direct_parents": [target["parent"]] if parents else [],
+            "all_parents": parents, "direct_children": [], "all_children": [],
+            "top_materials": tops, "paths": [], "sales_orders": [], "production_orders": [],
+            "alternative_groups": [], "warnings": [],
+            "risk": {"level": "中", "reasons": [check["path_issue"] or "工程版本命中须结合订单资料评审"]},
+            "evidence": {"edge_count": len(check["inspected_rows"])},
+            "material_validation": {"applicable": False, "status": "不适用"},
+            "calculated_on": datetime.now().date().isoformat(),
+        }
 
     @staticmethod
     def _change_log_entry(result: dict[str, Any]) -> dict[str, Any]:

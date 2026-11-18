@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from .engineering import import_rows as import_engineering_rows
 from .models import ImportResult
 from .normalization import (
     coerce_date,
@@ -31,6 +32,8 @@ def classify_source(headers: list[str]) -> str:
     def has(*names: str) -> bool:
         return all(normalize_header(name) in values for name in names)
 
+    if has("engineering_record"):
+        return "engineering_data"
     if has("采购数据类型"):
         return "procurement_data"
     if has("物料", "工厂", "库位", "采购总量", "已到货量", "剩余采购承诺", "可取消"):
@@ -191,7 +194,11 @@ class WorkbookImporter:
                 if source_type == "unrecognized" and not headers:
                     continue
                 source_types.append(source_type)
-                if source_type in {"procurement_data", "procurement_summary"}:
+                if source_type == "engineering_data":
+                    seen, imported, sheet_warnings = import_engineering_rows(
+                        connection, source_id, sheet_count, headers, rows
+                    )
+                elif source_type in {"procurement_data", "procurement_summary"}:
                     from .procurement import import_rows
                     seen, imported, sheet_warnings = import_rows(
                         connection, source_id, sheet_count, headers, rows, source_type == "procurement_summary"

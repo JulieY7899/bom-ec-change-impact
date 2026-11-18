@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .engineering import SCHEMA as ENGINEERING_SCHEMA
+from .engineering import VersionSnapshot
 from .normalization import safe_text
 from .privacy import PrivacyKey
 from .procurement import SCHEMA as PROCUREMENT_SCHEMA
@@ -231,9 +233,10 @@ CREATE INDEX IF NOT EXISTS idx_change_log_created
     ON change_log(created_at DESC);
 """
 
-SCHEMA += PROCUREMENT_SCHEMA
+SCHEMA += PROCUREMENT_SCHEMA + ENGINEERING_SCHEMA
 
 DATA_TABLES = (
+    "engineering_evidence",
     "procurement_records",
     "analysis_runs",
     "planning_supply_scenarios",
@@ -372,7 +375,13 @@ class Repository:
             (kind, entity_key, display_value),
         )
 
-    def finish_snapshot(self) -> dict[str, Any]:
+    def finish_snapshot(self, *, require_bom: bool = False) -> dict[str, Any]:
+        with self.connect() as connection:
+            has_version_bom = VersionSnapshot(connection).validate()
+            if require_bom and not has_version_bom and not connection.execute(
+                "SELECT 1 FROM bom_edges WHERE date_valid=1 LIMIT 1"
+            ).fetchone():
+                raise ValueError("新快照没有有效 BOM 关系；旧快照保持可用")
         self.assign_aliases()
         with self.connect() as connection:
             connection.execute(

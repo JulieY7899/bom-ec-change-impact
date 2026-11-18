@@ -83,6 +83,7 @@
               <button class="button primary" id="import-files" disabled>导入所选数据</button>
               <a class="button secondary" href="/api/import-template.xlsx" download>下载导入模板</a>
               <a class="button secondary" href="/api/procurement-template.xlsx" download>采购与到货示例（虚构数据）</a>
+              <a class="button secondary" href="/api/engineering-template.xlsx" download>工程版本与订单引用示例</a>
               <button class="button ghost" id="load-demo">载入虚拟演示数据</button>
             </div>
             <div class="progress-wrap hidden" id="import-progress">
@@ -135,6 +136,18 @@
           </div>
         </article>
 
+        <article class="panel hidden" id="engineering-catalog">
+          <div class="panel-heading compact">
+            <div><h2>已导入工程版本</h2></div>
+            <button class="button secondary" data-jump="draft">前往变更登记</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>成品</th><th>工厂范围</th><th>工程版本</th><th>BOM 行数</th></tr></thead>
+              <tbody id="engineering-catalog-rows"></tbody>
+            </table>
+          </div>
+        </article>
         <article class="panel">
           <div class="panel-heading compact">
             <div><p class="kicker">导入明细</p><h2>导入数据清单</h2></div>
@@ -173,9 +186,26 @@
                 </div>
               </fieldset>
 
-              <div class="dual-analysis-note">
+              <div class="dual-analysis-note" id="ordinary-scope-note">
                 <span>默认核查范围</span>
                 <p>每项变更均核查使用该物料的顶层成品，并展开其全部下层物料，无需另选方向。</p>
+              </div>
+
+              <div class="field-grid">
+                <label>核查方式
+                  <select id="engineering-mode">
+                    <option value="ordinary">按物料核查</option>
+                    <option value="engineering">按工程版本和 BOM 行核查</option>
+                  </select>
+                </label>
+              </div>
+              <div id="engineering-fields" class="field-grid hidden">
+                <label>成品 / 工厂 / 工程版本
+                  <select id="engineering-version"></select>
+                </label>
+                <label>目标 BOM 行
+                  <select id="engineering-row"></select>
+                </label>
               </div>
 
               <div class="field-grid">
@@ -332,6 +362,8 @@
             <div class="risk-badge" id="risk-badge"><span>关注等级</span><strong>—</strong></div>
           </div>
 
+          <div id="engineering-result" class="hidden"></div>
+          <div id="ordinary-analysis">
           <div class="direction-overview">
             <article class="direction-card upstream">
               <div><span>涉及成品</span><strong>成品及上层物料</strong><small>顶层成品 ↓ 变更料号</small></div>
@@ -395,6 +427,7 @@
             <div id="tab-sales" class="tab-panel"></div>
             <div id="tab-warnings" class="tab-panel"></div>
           </article>
+          </div>
         </div>
       </section>
 
@@ -420,6 +453,6 @@
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="/app.js?v=20260804-apple"></script>
+  <script src="/app.js?v=portfolio-v1.3-b22"></script>
 </body>
 </html>

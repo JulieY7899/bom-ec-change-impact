@@ -9,7 +9,11 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_DATA = {'data/.gitkeep', 'data/README.md', 'reports/.gitkeep'}
 TEMPLATE = 'outputs/bom-import-template/BOM工程变更数据导入模板.xlsx'
-TEMPLATES = {TEMPLATE, 'outputs/b19-import-template/B19采购与到货导入示例.xlsx'}
+TEMPLATES = {
+    TEMPLATE,
+    'outputs/b19-import-template/B19采购与到货导入示例.xlsx',
+    'outputs/b22-import-template/engineering-example.xlsx',
+}
 FORBIDDEN_PREFIXES = ('work/', 'output/', '.playwright-cli/', '.venv/')
 GENERATED = {'examples/sample-report.md', 'examples/sample-result.json',
              'examples/verification.json', 'docs/profile-draft.md'}

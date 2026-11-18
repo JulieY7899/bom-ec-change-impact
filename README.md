@@ -2,9 +2,9 @@
 
 [![Verify synthetic examples](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml)
 
-**V1.2-B19（0.3.0）** 支持采购行快照、收货、退货、全额冲销及对账。接口、计划页和下载报告统一显示数量、来源行与待确认事项。原 B19 的 50/20/30 汇总继续支持，订单、单位、日期或明细缺失时如实提示。采购承诺单独展示，处置由工程、采购和计划共同确认。参见[字段与示例](docs/procurement.md)。
+**V1.3-B22（0.4.0）** 支持按成品、工厂、工程版本和指定 BOM 行核查拟议变更。订单按明确版本引用命中，配置、执行状态和日期分别列出待核证据。网页和 Markdown 报告共用核查结果。[工程版本字段与示例](docs/engineering-versions.md)
 
-本机合成验收通过 87 项自动测试，含 B19 的 28 个采购场景。原 25 个业务案例通过 24 个，**B22 仍为能力缺口**。当前版本无法按独立工程版本、指定 BOM 行及订单引用精确判定影响范围。
+V1.2-B19 的采购承诺、收货、退货及冲销核查继续可用。[采购导入说明](docs/procurement.md)
 
 
 **工程变更影响核查 · 本地决策支持原型**

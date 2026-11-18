@@ -2,9 +2,9 @@
 
 [![Verify synthetic examples](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml)
 
-**V1.2-B19 (0.3.0)** adds purchase-line snapshots, receipts, returns, full reversals and reconciliation. The API, planning view and downloadable report show consistent quantities, evidence rows and review items. The original B19 summary of 50/20/30 remains supported, with missing order, unit, date or receipt details shown explicitly. Procurement commitments are reviewed separately by engineering, procurement and planning. See the [procurement guide and example](docs/procurement.md).
+**V1.3-B22 (0.4.0)** checks proposed changes against a specific engineering revision and BOM position within a product and plant scope. Explicit order references establish revision matches. Configuration, order status and timing evidence determine which cases require review. The browser and Markdown download use the same findings. [Engineering revision fields and example](docs/engineering-versions.md)
 
-Local synthetic validation passed 87 automated tests, including 28 procurement scenarios. Of the original 25 business cases, 24 passed. **B22 remains unsupported:** the tool cannot yet determine scope from an independent engineering revision, a specific BOM row and an order’s reference to that revision.
+V1.2-B19 procurement commitments, receipts, returns and reversals remain available. [Procurement import guide](docs/procurement.md)
 
 
 **Local decision support for engineering change reviews**
