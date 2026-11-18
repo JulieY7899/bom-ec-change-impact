@@ -7,6 +7,10 @@ import io
 import json
 import posixpath
 import re
+import shutil
+import subprocess
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
@@ -91,7 +95,45 @@ def preview_text(repository, body):
             "review_token": sign(repository, "ppt-preview", source)}
 
 
-def preview(repository, body):
+def preview_legacy(repository, body, converter=None):
+    if not 0 < len(body) <= MAX_UPLOAD or not body.startswith(bytes.fromhex("D0CF11E0A1B11AE1")):
+        raise ValueError("请选择 12 MB 以内的 PowerPoint 97–2003 演示文稿")
+    if converter is None:
+        installed = Path("/Applications/LibreOffice.app/Contents/MacOS/soffice")
+        converter = installed if installed.is_file() else shutil.which("soffice")
+    if not converter:
+        raise ValueError("本机未配置 PPT 转换。请使用 PPTX，或配置本机 LibreOffice")
+    with TemporaryDirectory(prefix="bom-legacy-ppt-") as temporary:
+        directory = Path(temporary)
+        source_file = directory / "material.ppt"
+        source_file.write_bytes(body)
+        profile = directory / "lo" / "user"
+        profile.mkdir(parents=True)
+        (profile / "registrymodifications.xcu").write_text(
+            '<oor:items xmlns:oor="http://openoffice.org/2001/registry">'
+            '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
+            '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop></item></oor:items>',
+            encoding="utf-8",
+        )
+        command = [str(converter), "-env:UserInstallation=" + profile.parent.as_uri(),
+                   "--headless", "--norestore", "--nodefault", "--infilter=MS PowerPoint 97",
+                   "--convert-to", "pptx", "--outdir", str(directory), str(source_file)]
+        # The legacy document converter only needs local files.
+        sandbox = Path("/usr/bin/sandbox-exec")
+        if sandbox.is_file():
+            command[:0] = [str(sandbox), "-p", "(version 1) (allow default) (deny network*)"]
+        try:
+            subprocess.run(command, check=True, timeout=25, cwd=directory, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            output = directory / "material.pptx"
+            if output.stat().st_size > MAX_UPLOAD:
+                raise ValueError("PPT 转换后的演示文稿超过 12 MB，请拆分后再上传")
+            return preview(repository, output.read_bytes(), legacy_body=body)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("无法在本机转换此 PPT，请另存为 PPTX 后重试") from exc
+
+
+def preview(repository, body, *, legacy_body=None):
     if not 0 < len(body) <= MAX_UPLOAD:
         raise ValueError("请选择 12 MB 以内的 PPTX")
     try:
@@ -113,8 +155,10 @@ def preview(repository, body):
         raise ValueError("无法读取此 PPTX，请使用标准 PowerPoint 演示文稿") from exc
     if not slides:
         raise ValueError("没有可提取的文本页。请先把图片或扫描页转成文本")
-    source = {"digest": hashlib.sha256(body).hexdigest(),
+    source = {"digest": hashlib.sha256(body if legacy_body is None else legacy_body).hexdigest(),
               "slides": [entry["slide"] for entry in slides], "page_count": len(paths)}
+    if legacy_body is not None:
+        source["kind"] = "ppt"
     return {**source, "excerpts": slides, "review_token": sign(repository, "ppt-preview", source)}
 
 

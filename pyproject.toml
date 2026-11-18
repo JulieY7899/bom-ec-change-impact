@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+engineering-search = ["qdrant-client==1.20.0", "fastembed==0.9.1"]
+
 [project.scripts]
 bom-change-assistant = "bom_change_assistant.web:main"
 

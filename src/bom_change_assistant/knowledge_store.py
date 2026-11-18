@@ -63,7 +63,7 @@ def vector(text):
 
 
 def source_id(kind, digest):
-    return ("PPT" if kind == "pptx" else "TXT") + "-" + digest[:16].upper()
+    return ("PPT" if kind in {"ppt", "pptx"} else "TXT") + "-" + digest[:16].upper()
 
 
 def _insert_units(db, digest, units):
@@ -111,6 +111,11 @@ def _store(repository):
             yield db
 
 
+def method(repository):
+    from .semantic_index import METHOD as semantic_method
+    return semantic_method if getattr(repository, "semantic_index", None) else METHOD
+
+
 def library(repository):
     with _store(repository) as db:
         grouped = dict(db.execute("SELECT section,COUNT(*) FROM documents GROUP BY section"))
@@ -121,7 +126,7 @@ def library(repository):
                          JOIN chunks c ON c.digest=d.digest GROUP BY d.digest ORDER BY d.section,d.title,d.digest
                      """)]
         count = sum(item["chunks"] for item in inventory)
-    return {"documents": sum(grouped.values()), "excerpts": units, "chunks": count, "inventory": inventory, "method": METHOD,
+    return {"documents": sum(grouped.values()), "excerpts": units, "chunks": count, "inventory": inventory, "method": method(repository),
             "sections": [{"id": k, "label": v, "documents": grouped.get(k, 0)} for k, v in SECTIONS.items()]}
 
 
@@ -137,10 +142,13 @@ def replace_document(repository, digest, kind, section, title, units):
             raise ValueError(f"工程知识库最多容纳 {MAX_DOCUMENTS} 份材料")
         db.execute("INSERT INTO documents VALUES (?,?,?,?)", (digest, kind, section, title.strip()))
         count = _insert_units(db, digest, sorted(units.items()))
+        index = getattr(repository, "semantic_index", None)
+        if index is not None:
+            index.sync_and_search(db)
     return {**library(repository), "source_id": source_id(kind, digest), "indexed": len(units), "indexed_chunks": count}
 
 
-def retrieve(repository, query, section=""):
+def retrieve(repository, query, section="", *, context_query=False):
     if not isinstance(section, str) or (section and section not in SECTIONS):
         raise ValueError("检索分区无效")
     if not isinstance(query, str) or len(query) > 240:
@@ -148,6 +156,9 @@ def retrieve(repository, query, section=""):
     terms = vector(query)
     matches = []
     with _store(repository) as db:
+        index = getattr(repository, "semantic_index", None)
+        if index is not None:
+            db.execute("BEGIN IMMEDIATE")
         where = "WHERE d.section=?" if section else ""
         params = [section] if section else []
         populated = db.execute("SELECT 1 FROM documents d " + where + " LIMIT 1", params).fetchone()
@@ -155,20 +166,41 @@ def retrieve(repository, query, section=""):
             values = ",".join("(?,?,?)" for _ in terms)
             # A complete material code is discriminating even in a long block of prose.
             bindings = []
+            has_identifier = False
             for term, weight in terms.items():
                 identifier = term.isascii() and any(c.isdigit() for c in term) and (
                     any(c.isalpha() for c in term) or len(term) >= 4)
+                has_identifier |= identifier
                 bindings.extend((term, weight, int(identifier)))
+            exact_only = index is not None and has_identifier and not context_query
+            threshold = "identifiers>0" if exact_only else "identifiers>0 OR score>=0.10"
             sql = f"""WITH q(term,w,identifier) AS (VALUES {values})
                 SELECT d.digest,d.kind,d.section,d.title,c.unit,c.part,c.text,SUM(q.w*p.weight) AS score,
                        SUM(q.identifier) AS identifiers
                 FROM q JOIN postings p ON p.term=q.term JOIN chunks c ON c.id=p.chunk
                 JOIN documents d ON d.digest=c.digest {where}
-                GROUP BY c.id HAVING identifiers>0 OR score>=0.10
+                GROUP BY c.id HAVING {threshold}
                 ORDER BY identifiers DESC,score DESC,d.digest,c.unit,c.part LIMIT 3"""
             for digest, kind, zone, title, unit, part, text, score, identifiers in db.execute(sql, bindings + params):
                 matches.append({"source_id": source_id(kind, digest), "kind": kind, "section": zone,
                                 "section_label": SECTIONS[zone], "title": title, "slide": unit,
                                 "chunk": part, "text": text, "score": round(score, 4), "matched_identifiers": identifiers})
+            if index is not None and not exact_only:
+                semantic = index.sync_and_search(db, query, section)
+                exact = [m for m in matches if m["matched_identifiers"]]
+                ranked = list(exact)
+                for (digest, kind, zone, title, unit, part, text), score in semantic:
+                    ranked.append({"source_id": source_id(kind, digest), "kind": kind, "section": zone,
+                                   "section_label": SECTIONS[zone], "title": title, "slide": unit,
+                                   "chunk": part, "text": text, "score": round(score, 4),
+                                   "matched_identifiers": 0})
+                seen = set()
+                combined = []
+                for hit in ranked + matches:
+                    key = hit["source_id"], hit["slide"], hit["chunk"]
+                    if key not in seen:
+                        combined.append(hit)
+                        seen.add(key)
+                matches = combined[:3]
     return {"status": "retrieved" if matches else "no_match" if populated else "empty",
-            "method": METHOD, "matches": matches}
+            "method": method(repository), "matches": matches}

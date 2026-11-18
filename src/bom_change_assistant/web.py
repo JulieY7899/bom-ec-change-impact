@@ -69,6 +69,7 @@ class AppState:
         if accounts_path and database_path.resolve() == accounts_path.resolve():
             raise ValueError("账号库和业务数据库须使用独立文件")
         self.accounts = Accounts(accounts_path)
+        self.legacy_ppt_converter = None
         self.repository = Repository(database_path)
         self.analysis = AnalysisService(self.repository)
         # Keep analysis and publication consistent without locking around network I/O.
@@ -603,7 +604,10 @@ class Handler(BaseHTTPRequestHandler):
         if path in {"/api/engineering-knowledge/preview", "/api/engineering-knowledge/index"}:
             self._engineering_knowledge_context(route)
             if path.endswith("/preview"):
-                if parse_qs(route.query).get("kind") == ["text"]:
+                kind = parse_qs(route.query).get("kind")
+                if kind == ["ppt"]:
+                    return knowledge.preview_legacy(self.state.repository, payload, self.state.legacy_ppt_converter)
+                if kind == ["text"]:
                     return knowledge.preview_text(self.state.repository, payload)
                 return knowledge.preview(self.state.repository, payload)
             self.state.require_no_import()
@@ -653,8 +657,14 @@ def run_server(
     database_path: Path = DATABASE_PATH,
     open_browser: bool = True,
     accounts_path: Path | None = None,
+    knowledge_model: Path | None = None,
+    legacy_ppt_converter: Path | None = None,
 ) -> None:
     state = AppState(database_path, accounts_path)
+    state.legacy_ppt_converter = legacy_ppt_converter.resolve() if legacy_ppt_converter else None
+    if knowledge_model is not None:
+        from .semantic_index import SemanticIndex
+        state.repository.semantic_index = SemanticIndex(database_path.with_name(database_path.name + ".qdrant"), knowledge_model)
     handler = type("BoundHandler", (Handler,), {"state": state})
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("隐私优先版本不允许监听非本机地址")
@@ -679,6 +689,8 @@ def main() -> None:
     parser.add_argument("--database", type=Path, default=DATABASE_PATH)
     parser.add_argument("--accounts", type=Path, help="本机管理员维护的账号库路径")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--knowledge-model", type=Path, help="启用本机 Qdrant 工程语义检索，指定已校验的中文模型目录")
+    parser.add_argument("--legacy-ppt-converter", type=Path, help="PowerPoint 97–2003 文件的本机 soffice 路径")
     args = parser.parse_args()
     run_server(
         host=args.host,
@@ -686,6 +698,8 @@ def main() -> None:
         database_path=args.database,
         open_browser=not args.no_browser,
         accounts_path=args.accounts,
+        knowledge_model=args.knowledge_model,
+        legacy_ppt_converter=args.legacy_ppt_converter,
     )
 
 

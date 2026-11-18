@@ -1,6 +1,7 @@
 """Workflow HTTP contracts and local PPT retrieval, using invented data only."""
 from __future__ import annotations
 
+import hashlib
 import html
 import http.client
 import io
@@ -14,6 +15,7 @@ from copy import deepcopy
 from dataclasses import replace
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from bom_change_assistant.accounts import Accounts, password_key, set_account
@@ -149,6 +151,33 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(self.request(endpoint, method="GET"), {"ok": True, **selected})
             self.assertEqual(self.request("/api/report.md", method="GET"), selected["report"])
             self.assertNotIn("analysis", self.request("/api/workflow/run", method="GET"))
+
+    def test_legacy_ppt_preview_preserves_source_and_requires_engineering_account(self):
+        self.login_as("engineering")
+        self.import_bom()
+        run = self.engineering_run()
+        upload = bytes.fromhex("D0CF11E0A1B11AE1") + b"synthetic test input"
+        url = self.knowledge_url(run, "/preview") + "&kind=ppt"
+        self.request(url, b"not a legacy PPT", status=400)
+
+        def convert(command, **options):
+            (options["cwd"] / "material.pptx").write_bytes(presentation())
+
+        with patch("bom_change_assistant.knowledge.subprocess.run", side_effect=convert) as converter:
+            parsed = self.request(url, upload)
+            converter.assert_called_once()
+            self.login_as("procurement", ("engineering",))
+            self.request(url, upload, status=403)
+            converter.assert_called_once()
+
+        self.assertEqual(parsed["kind"], "ppt")
+        self.assertEqual(parsed["digest"], hashlib.sha256(upload).hexdigest())
+        self.assertEqual(parsed["page_count"], 2)
+        self.login_as("engineering")
+        indexed = self.request(self.knowledge_url(run, "/index"),
+                               {**parsed, "excerpts": [parsed["excerpts"][0]], "approved": True})
+        self.assertTrue(indexed["source_id"].startswith("PPT-"))
+        self.assertEqual(indexed["indexed"], 1)
 
     def test_knowledge_is_separate_from_standard_workflow_and_download(self):
         self.login_as("engineering", ("procurement", "engineering"))

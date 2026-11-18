@@ -6,7 +6,7 @@
 
 V1.2-B19 procurement commitments, receipts, returns and reversals remain available. [Procurement import guide](docs/procurement.md)
 
-With a local account database configured, sign in from the top-right account menu. The role picker lists the roles granted to that account. Switching roles keeps draft fields, clears the previous preflight and removes any displayed knowledge excerpts. In **03 Impact Review**, an engineering-department account using the Engineering role can open a completed engineering review and work with a local knowledge library. Choose a redacted PPTX, TXT or Markdown file, review the excerpts, select a section and index the approved text. Search the selected section or the entire library. Downloads use the original review record and exclude library content. [Local setup and workflow guide (Chinese)](docs/workflow.md#账号和角色)
+With a local account database configured, sign in from the top-right account menu. The role picker lists the roles granted to that account. Switching roles keeps draft fields, clears the previous preflight and removes any displayed knowledge excerpts. In **03 Impact Review**, an engineering-department account using the Engineering role can open a completed engineering review and work with a local knowledge library. Choose a redacted PPT, PPTX, Markdown or TXT file, review the excerpts, select a section and index the approved text. Search the selected section or the entire library. Enable Qdrant Local for on-device Chinese semantic search. Downloads use the original review record and exclude library content. [Workflow guide (Chinese)](docs/workflow.md#03-影响核查中的工程辅助分析) · [Local semantic search setup (Chinese)](docs/engineering-semantic.md)
 
 
 **Local decision support for engineering change reviews**

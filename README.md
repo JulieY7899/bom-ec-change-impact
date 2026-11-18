@@ -8,7 +8,7 @@ V1.2-B19 的采购承诺、收货、退货及冲销核查继续可用。[采购�
 
 本地工作流把业务问题转成可确认的核查参数，可将预检结果带入「01 数据准备」，再按当前快照执行规则核查并生成报告。支持研发、采购、销售、制造和工程五个视角。[工作流使用说明](docs/workflow.md)
 
-启用本机账号库后，从网页右上角登录并切换已授权角色。工程部门账号以工程角色完成核查后，可在「03 影响核查」上传、审核并按分区检索脱敏材料。知识库摘录仅在工程辅助分析面板显示，报告仍使用规则核查结果。[账号配置与知识库操作](docs/workflow.md#账号和角色)
+启用本机账号库后，从网页右上角登录并切换已授权角色。工程部门账号以工程角色完成核查后，可在「03 影响核查」上传、审核并按分区检索脱敏的 PPT、PPTX、Markdown 或 TXT。可启用 Qdrant Local 中文语义检索。知识库摘录仅在工程辅助分析面板显示，报告仍使用规则核查结果。[03 影响核查使用说明](docs/workflow.md#03-影响核查中的工程辅助分析) · [配置本机中文语义检索](docs/engineering-semantic.md)
 
 **工程变更影响核查 · 本地决策支持原型**
 
@@ -113,7 +113,7 @@ python3 scripts/check_public_files.py
 
 自动测试覆盖 Linux 上 Python 3.11 / 3.12 / 3.14，以及 macOS 上 Python 3.14；运行状态以本页徽章和 Actions 记录为准。
 
-测试覆盖采购对账、多层追溯、订单关联、日期边界、用量完整性、批次隔离、报告和本地 HTTP 接口。当前运行结果见 [GitHub Actions](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml)。
+测试覆盖采购对账、多层追溯、订单关联、日期边界、用量完整性、批次隔离、报告和本地 HTTP 接口。使用本机中文模型的测试命令见工程知识库配置说明。当前运行结果见 [GitHub Actions](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml)。
 
 ## 最近修复
 

@@ -34,7 +34,8 @@ def main() -> int:
         if (name.startswith(FORBIDDEN_PREFIXES) or name in GENERATED
                 or path.name == '.DS_Store' or path.name.startswith('.env')
                 or re.search(r'\.(?:sqlite3|sqlite|db)(?:-|$)', name)
-                or path.suffix in {'.log', '.zip', '.csv', '.tsv'}
+                or any(part.endswith('.qdrant') for part in path.parts)
+                or path.suffix.lower() in {'.log', '.zip', '.csv', '.tsv', '.onnx', '.ppt', '.pptx'}
                 or (name.startswith(('data/', 'reports/')) and name not in ALLOWED_DATA)
                 or (name.startswith('outputs/') and name not in TEMPLATES)
                 or (path.suffix in {'.xlsx', '.xls'} and name not in TEMPLATES)):

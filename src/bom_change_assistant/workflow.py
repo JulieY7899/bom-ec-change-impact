@@ -572,10 +572,11 @@ def engineering_context(repository, run_id):
 def engineering_references(repository, context, query="", section=""):
     if not isinstance(query, str):
         raise ValueError("搜索问题须为文本")
-    if not query.strip():
+    automatic = not query.strip()
+    if automatic:
         draft = context["draft"]
         terms = [ROLES["engineering"][1], *context["focus"], CHANGE_TYPES[draft["change_type"]]]
         terms.extend(str(draft.get(k) or "") for k in
                      ("old_component", "new_component", "engineering_version", "target_bom_row"))
         query = " ".join(terms)[:240]
-    return knowledge_store.retrieve(repository, query, section)
+    return knowledge_store.retrieve(repository, query, section, context_query=automatic)

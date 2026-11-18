@@ -297,7 +297,8 @@ function setupEngineeringKnowledge(post, element) {
           catalog.append(element("p", [item.title, item.source_id, item.chunks + " 个片段"].filter(Boolean).join(" · ")));
         }
       }
-      library.textContent = data.documents + " 份材料 · " + data.chunks + " 个已审核片段";
+      library.textContent = data.documents + " 份材料 · " + data.chunks + " 个已审核片段"
+        + (data.method.startsWith("qdrant-local") ? " · Qdrant 本机中文语义检索" : "");
       panel.classList.remove("hidden");
     } catch (error) {
       if (isCurrent(id, revision)) reset();
@@ -365,8 +366,8 @@ function setupEngineeringKnowledge(post, element) {
     const file = pptInput.files[0];
     const id = activeId;
     const revision = libraryRevision;
-    if (!file || !/\.(pptx|txt|md)$/i.test(file.name)) {
-      knowledgeStatus.textContent = "请选择 PPTX、TXT 或 Markdown 文件。";
+    if (!file || !/\.(pptx?|txt|md)$/i.test(file.name)) {
+      knowledgeStatus.textContent = "请选择 PPT、PPTX、TXT 或 Markdown 文件。";
       return;
     }
     previewButton.disabled = true;
@@ -374,7 +375,8 @@ function setupEngineeringKnowledge(post, element) {
     try {
       const isText = /\.(txt|md)$/i.test(file.name);
       const unit = isText ? " 段" : " 页";
-      const data = await api(endpoint("/preview", id) + (isText ? "&kind=text" : ""), { method: "POST", body: file });
+      const format = isText ? "&kind=text" : /\.ppt$/i.test(file.name) ? "&kind=ppt" : "";
+      const data = await api(endpoint("/preview", id) + format, { method: "POST", body: file });
       if (!isCurrent(id, revision) || file !== pptInput.files[0]) return;
       preview = data;
       for (const item of data.excerpts) {
