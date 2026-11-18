@@ -457,7 +457,6 @@ textarea { resize: vertical; }
 .warning-item { display: grid; grid-template-columns: 60px 50px 1fr; gap: 10px; padding: 11px 12px; border-radius: 10px; background: #faf8f1; font-size: 11px; line-height: 1.5; }
 .warning-item.important { background: #f8e5e1; }
 
-.ai-status { margin-bottom: 14px; min-height: 18px; color: var(--muted); font-size: 11px; }
 .report-paper {
   max-width: 1060px; margin: 0 auto; padding: 48px 56px; background: #fffefa;
   border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 24px 70px rgba(27,44,39,.11);
@@ -1577,3 +1576,54 @@ input:focus, select:focus, textarea:focus {
     -webkit-backdrop-filter: none;
   }
 }
+.workflow-panel { margin-bottom: 18px; }
+.workflow-question { display: grid; gap: 8px; margin-bottom: 16px; }
+.workflow-dialogue-log {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 350px;
+  overflow: auto;
+  margin-bottom: 16px;
+}
+.workflow-message {
+  align-self: flex-start;
+  max-width: 88%;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: var(--surface-2, #edf1f5);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.workflow-message p { margin: 3px 0 0; }
+.workflow-message strong { font-size: .8rem; }
+.workflow-message-user { align-self: flex-end; background: #e1efff; color: #173856; }
+.workflow-transfer { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line, #d5dbe4); }
+#workflow-collected-fields, #workflow-data-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 18px;
+}
+#workflow-collected-fields dd, #workflow-data-fields dd { margin: 0; overflow-wrap: anywhere; }
+#view-workflow textarea { width: 100%; resize: vertical; }
+#view-workflow label[hidden] { display: none; }
+.workflow-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 12px;
+  padding: 0;
+  list-style: inside decimal;
+}
+.workflow-steps li {
+  padding: 12px;
+  border: 1px solid var(--line, #d5dbe4);
+  border-radius: 12px;
+}
+.workflow-step-status, .workflow-step-detail { display: block; margin-top: 4px; }
+.workflow-step-detail { font-size: .85rem; overflow-wrap: anywhere; }
+.workflow-check { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.workflow-check input { width: auto; }
+.workflow-excerpt { border: 1px solid var(--line, #d5dbe4); border-radius: 12px; padding: 12px; margin: 12px 0; }
+#workflow-report { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
+.workflow-knowledge-text { white-space: pre-line; overflow-wrap: anywhere; }

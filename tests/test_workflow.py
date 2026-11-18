@@ -1,0 +1,327 @@
+"""Workflow HTTP contracts and local PPT retrieval, using invented data only."""
+from __future__ import annotations
+
+import html
+import http.client
+import io
+import json
+import tempfile
+import threading
+import unittest
+from copy import deepcopy
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from zipfile import ZipFile
+
+from bom_change_assistant.knowledge import A, P, R, RELS
+from bom_change_assistant.web import AppState, Handler
+from tests.test_engineering import OLD_BOM, QUERY, base, order, record, sheet
+from tests.test_procurement import BASE, COLUMNS, receipt, workbook
+
+QUESTION = "2026-12-01 把 PART-OLD 换成 PART-NEW，采购承诺和到货怎么核查？"
+REVIEWED = "工程版本替换与 BOM 行生效复核。工程确认版本引用和组件路径。"
+SCREENSHOT = "我是采购，我需要识别Comp-001无法及时采购，替代采购件为comp-998有什么影响"
+KNOWLEDGE = "/api/engineering-knowledge"
+
+
+def presentation():
+    stream = io.BytesIO()
+    with ZipFile(stream, "w") as deck:
+        deck.writestr("ppt/presentation.xml", f"""
+          <p:presentation xmlns:p="{P}" xmlns:r="{R}"><p:sldIdLst>
+          <p:sldId id="256" r:id="b"/><p:sldId id="257" r:id="a"/>
+          </p:sldIdLst></p:presentation>""")
+        deck.writestr("ppt/_rels/presentation.xml.rels", f"""
+          <Relationships xmlns="{RELS}">
+          <Relationship Id="a" Type="{R}/slide" Target="slides/slide1.xml"/>
+          <Relationship Id="b" Type="{R}/slide" Target="slides/slide2.xml"/>
+          </Relationships>""")
+        for position, text in ((2, "待人工删去的内容"), (1, "旅行天文与远方星系")):
+            deck.writestr(f"ppt/slides/slide{position}.xml", f"""
+              <p:sld xmlns:p="{P}" xmlns:a="{A}"><a:p><a:r><a:t>{html.escape(text)}</a:t></a:r></a:p></p:sld>""")
+        deck.writestr("ppt/notesSlides/notesSlide1.xml", "RESTRICTION_TEST_NOTES")
+    return stream.getvalue()
+
+
+class WorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.state = AppState(self.root / "workflow.sqlite3")
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0),
+            type("WorkflowHandler", (Handler,), {"state": self.state}))
+        thread = threading.Thread(target=self.server.serve_forever, args=(0.02,), daemon=True)
+        thread.start()
+        self.addCleanup(self.state.abort_import)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(self.server.shutdown)
+
+    def request(self, path, payload=None, method="POST", status=200):
+        client = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
+        try:
+            body = None if method == "GET" else payload if isinstance(payload, bytes) else json.dumps(payload or {})
+            client.request(method, path, body)
+            response = client.getresponse()
+            raw = response.read()
+            data = json.loads(raw) if "json" in response.getheader("Content-Type", "") else raw.decode()
+            self.assertEqual(response.status, status, data)
+            return data
+        finally:
+            client.close()
+
+    def import_bom(self, *, engineering=False):
+        path = self.root / "fixture.xlsx"
+        other_version = dict(engineering_version="ENG-V1")
+        version_rows = base() + [
+            record("VERSION", **other_version),
+            order("SO-OLD", engineering_version="ENG-V1"),
+            order("SO-NO-REV", engineering_version=""),
+        ]
+        purchases = [[name for _, name in COLUMNS]]
+        purchases += [[entry.get(name) for name, _ in COLUMNS] for entry in (BASE, receipt())]
+        workbook(path, [OLD_BOM, purchases, sheet(version_rows)] if engineering else [OLD_BOM, purchases])
+        self.request("/api/snapshot/start", {"expected_files": 1})
+        self.request("/api/import/file", path.read_bytes())
+        self.request("/api/snapshot/finish")
+
+    def preflight(self, **payload):
+        return self.request("/api/workflow/preflight", {"question": QUESTION, **payload})
+
+    def run_review(self, prepared, status=200):
+        return self.request("/api/workflow/run", {
+            "confirmed": True, "context": prepared["context"],
+            "confirmation_token": prepared["confirmation_token"],
+        }, status=status)
+
+    def engineering_run(self):
+        return self.run_review(self.preflight(role="engineering", question="2026-12-01 把 PART-OLD 换成 PART-NEW"))["run_id"]
+
+    def knowledge_url(self, run_id, action=""):
+        return KNOWLEDGE + action + "?analysis_id=" + run_id
+
+    def index_document(self, run_id, text=REVIEWED):
+        parsed = self.request(self.knowledge_url(run_id, "/preview"), presentation())
+        self.assertEqual(parsed["page_count"], 2)
+        self.assertEqual(parsed["excerpts"][0]["text"], "待人工删去的内容")
+        self.assertEqual(parsed["excerpts"][1]["slide"], 2)
+        self.assertNotIn("RESTRICTION_TEST_NOTES", json.dumps(parsed))
+        reviewed = {k: parsed[k] for k in ("digest", "slides", "page_count", "review_token")}
+        reviewed["excerpts"] = [{"slide": 1, "text": text}]
+        self.request(self.knowledge_url(run_id, "/index"), reviewed, status=400)
+        self.assertEqual(self.request(self.knowledge_url(run_id), method="GET")["excerpts"], 0)
+        return self.request(self.knowledge_url(run_id, "/index"), {**reviewed, "approved": True})
+
+    def test_knowledge_is_separate_from_standard_workflow_and_download(self):
+        self.import_bom()
+        before = self.preflight()
+        self.assertTrue(before["ready"], before)
+        self.assertEqual(before["context"]["draft"]["effective_date"], "2026-12-01")
+        self.assertEqual(before["context"]["role"], "procurement")
+        engineering_id = self.engineering_run()
+        self.assertEqual(self.request(self.knowledge_url(engineering_id, "/references"), method="GET")["status"], "empty")
+        doc = self.index_document(engineering_id)
+        run = self.run_review(before)
+        self.assertTrue(any("PO-P19-001 / 00010" in fact and "剩余承诺 30" in fact for fact in run["answer"]["facts"]))
+        self.assertNotIn("knowledge", run)
+        self.assertNotIn("knowledge_references", run["answer"])
+        self.assertNotIn(REVIEWED, run["report"])
+        self.assertNotIn("PPT 知识参考", run["report"])
+        self.assertEqual(self.request(
+            "/api/workflow/report.md?run_id=" + run["run_id"], method="GET"), run["report"])
+        self.assertEqual(self.request("/api/workflow/run?run_id=" + run["run_id"], method="GET"), run)
+        self.assertEqual(self.request("/api/workflow/run", method="GET"), run)
+        outcome = self.request(self.knowledge_url(engineering_id, "/references"), method="GET")
+        self.assertEqual(outcome["status"], "retrieved")
+        hit, = outcome["matches"]
+        self.assertEqual((hit["source_id"], hit["slide"], hit["text"]), (doc["source_id"], 1, REVIEWED))
+        for run_id in ("", run["run_id"], "AN-UNKNOWN"):
+            for route, method in (("", "GET"), ("/references", "GET"), ("/preview", "POST"), ("/index", "POST")):
+                self.request(self.knowledge_url(run_id, route), method=method, status=403)
+        self.request("/api/knowledge", method="GET", status=404)
+        for run_id, permitted in ((engineering_id, True), (run["run_id"], False)):
+            result = self.request("/api/analysis/by-id?analysis_id=" + run_id, method="GET")
+            self.assertEqual(result["result"]["engineering_knowledge_available"], permitted)
+
+    def test_legacy_workflow_reports_hide_stored_knowledge_without_rewriting_rows(self):
+        self.import_bom()
+        run = self.run_review(self.preflight())
+        legacy = deepcopy({key: value for key, value in run.items() if key not in {"ok", "report"}})
+        legacy["context"]["knowledge_revision"] = "legacy"
+        legacy["answer"]["knowledge_references"] = [{"text": REVIEWED}]
+        legacy["knowledge"] = {"matches": [{"text": REVIEWED}]}
+        legacy["steps"].insert(3, {"name": "知识检索", "status": "已引用", "detail": "1 页"})
+        with self.state.repository.connect() as connection:
+            connection.execute("UPDATE workflow_runs SET result_json=?, report_markdown=? WHERE run_id=?",
+                               (json.dumps(legacy), REVIEWED, run["run_id"]))
+        self.assertEqual(self.request("/api/workflow/run", method="GET"), run)
+        self.assertEqual(self.request(
+            "/api/workflow/report.md?run_id=" + run["run_id"], method="GET"), run["report"])
+        with self.state.repository.connect() as connection:
+            self.assertEqual(connection.execute("SELECT report_markdown FROM workflow_runs").fetchone()[0], REVIEWED)
+
+    def test_preflight_missing_fields_no_engineering_fallback(self):
+        missing = self.preflight(question="这个组件会影响哪些订单？")
+        self.assertFalse(missing["ready"])
+        self.assertTrue({"role_required", "missing_field", "no_snapshot"} <=
+                        {issue["code"] for issue in missing["context"]["issues"]})
+        self.import_bom()
+        strict = self.preflight(role="engineering", draft={**QUERY, "engineering_version": ""})
+        self.assertFalse(strict["ready"])
+        self.assertIn("no_ebom", {i["code"] for i in strict["context"]["issues"]})
+        self.assertIn("engineering_version", {i["field"] for i in strict["context"]["issues"]})
+        self.assertIn("先预检", self.run_review(strict, 400)["error"])
+        with self.state.repository.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0], 0)
+
+    def test_strict_scope_counts_and_role_order_evidence(self):
+        self.import_bom(engineering=True)
+        prepared = self.preflight(question=(
+            "从销售角度，成品 FG-T1，工厂 PLANT-T，工程版本 ENG-V2，"
+            "BOM 行 V2-L2，2026-12-01 把 PART-OLD 换成 PART-NEW，哪些订单行要复核？"
+        ))
+        self.assertTrue(prepared["ready"], prepared)
+        self.assertEqual(prepared["context"]["role"], "sales")
+        self.assertEqual(prepared["context"]["draft"]["target_bom_row"], "V2-L2")
+        self.assertIn("order_references_pending", {i["code"] for i in prepared["context"]["issues"]})
+        result = self.run_review(prepared)
+        self.assertIn("命中 1 个，排除 1 个，引用待核 1 个", result["answer"]["facts"][0])
+        for identifier in ("SO-22", "SO-OLD", "SO-NO-REV", "V2-L2"):
+            self.assertIn(identifier, result["report"])
+
+    def test_reject_changed_input_and_snapshot_preserve_index(self):
+        self.import_bom()
+        self.index_document(self.engineering_run())
+        prepared = self.preflight()
+        prepared["context"]["draft"]["old_component"] = "ANOTHER-PART"
+        self.run_review(prepared, 400)
+        pending = self.preflight()
+        run = self.run_review(pending)
+        self.import_bom()
+        self.run_review(pending, 400)
+        self.assertIsNone(self.request("/api/workflow/run", method="GET")["run_id"])
+        self.request("/api/workflow/run?run_id=" + run["run_id"], method="GET", status=404)
+        self.assertEqual(self.request(self.knowledge_url(self.engineering_run()), method="GET")["documents"], 1)
+
+    def test_no_related_slide_and_invalid_file(self):
+        self.import_bom()
+        run_id = self.engineering_run()
+        self.request(self.knowledge_url(run_id, "/preview"), b"NOT A PRESENTATION", status=400)
+        self.index_document(run_id, "距离银河中心数千光年，隧道示意。")
+        found = self.request(self.knowledge_url(run_id, "/references"), method="GET")
+        self.assertEqual(found["status"], "no_match")
+        self.assertEqual(found["matches"], [])
+
+    def test_ordinary_role_facts_use_the_existing_rule_result(self):
+        self.request("/api/demo")
+        question = "2026-08-01 删除 COMP-001"
+        expected = {
+            "rd": "涉及成品 FG-A、FG-B",
+            "engineering": "3 条上溯路径",
+            "sales": "SALES-DEMO-ALPHA / 10",
+            "manufacturing": "PRODUCTION-DEMO-ALPHA",
+            "procurement": "当前快照未匹配采购证据",
+        }
+        for role, evidence in expected.items():
+            with self.subTest(role=role):
+                run = self.run_review(self.preflight(role=role, question=question))
+                self.assertTrue(any(evidence in fact for fact in run["answer"]["facts"]))
+
+    def test_dialogue_collects_across_turns_and_drives_confirmed_run(self):
+        self.import_bom(engineering=True)
+        messages = ["从销售角度，想看订单行交期。",
+                    "成品 FG-T1，工厂 PLANT-T，工程版本 ENG-V2，BOM 行 V2-L2，把 PART-OLD 换成 PART-NEW。"]
+        partial = self.request("/api/workflow/dialogue", {"messages": messages})
+        self.assertEqual(partial["missing"], ["effective_date"])
+        self.assertIn("年份", partial["reply"])
+        self.assertEqual(partial["fields"]["role"], "sales")
+        complete = self.request("/api/workflow/dialogue", {
+            "messages": [*messages, "2026 年 12 月 1 日", "拟生效日改成 2026年12月2日。",
+                         "不是 PART-NEW，是 PART-NEXT。"],
+        })
+        self.assertEqual(complete["missing"], [])
+        self.assertEqual(complete["fields"]["effective_date"], "2026-12-02")
+        self.assertEqual(complete["fields"]["new_component"], "PART-NEXT")
+        self.assertIn("交期", complete["focus"])
+        draft = dict(complete["fields"])
+        role = draft.pop("role")
+        prepared = self.request("/api/workflow/preflight", {
+            "draft": draft, "role": role, "focus": complete["focus"],
+        })
+        self.assertTrue(prepared["ready"], prepared)
+        run = self.run_review(prepared)
+        self.assertIn("PART-NEXT", run["report"])
+        self.assertIn("SO-22", run["report"])
+        self.assertNotIn(messages[0], run["report"])
+
+    def test_dialogue_drops_stale_row_and_uses_prompted_bare_id(self):
+        messages = [
+            "从销售角度，2026-12-01 把 PART-OLD 换成 PART-NEW，成品 FG-T1、"
+            "工厂 PLANT-T、工程版本 ENG-V2、BOM 行 V2-L2。",
+            "版本改为 ENG-V1。",
+        ]
+        corrected = self.request("/api/workflow/dialogue", {"messages": messages})
+        self.assertEqual(corrected["fields"]["engineering_version"], "ENG-V1")
+        self.assertEqual(corrected["cleared"], ["target_bom_row"])
+        self.assertEqual(corrected["missing"], ["target_bom_row"])
+        filled = self.request("/api/workflow/dialogue", {"messages": [*messages, "V1-L1"]})
+        self.assertEqual(filled["fields"]["target_bom_row"], "V1-L1")
+        self.assertEqual(filled["cleared"], [])
+        self.assertEqual(filled["missing"], [])
+
+    def test_dialogue_keeps_missing_data_and_zero_explicit(self):
+        partial = self.request("/api/workflow/dialogue", {"messages": [
+            "从采购角度，采购工厂 PLANT-P，库位 STORE-A，想调整用量。",
+            "把 PART-OLD 的用量从 2 改成 0。", "12月1日",
+        ]})
+        self.assertEqual(partial["fields"]["planning_plant"], "PLANT-P")
+        self.assertNotIn("plant", partial["fields"])
+        self.assertEqual(partial["fields"]["new_quantity"], 0)
+        self.assertNotIn("effective_date", partial["fields"])
+        self.assertIn("effective_date", partial["missing"])
+        self.request("/api/workflow/dialogue", {"messages": ["x" * 501]}, status=400)
+
+
+    def test_screenshot_dialogue_collects_replacement_without_reasking_for_parts(self):
+        partial = self.request("/api/workflow/dialogue", {"messages": [SCREENSHOT]})
+        expected = {"role": "procurement", "change_type": "replace",
+                    "old_component": "COMP-001", "new_component": "COMP-998"}
+        self.assertEqual(partial["fields"], expected)
+        self.assertEqual(partial["missing"], ["effective_date"])
+        for messages in (
+            [SCREENSHOT, "2026/12/1", "采购工厂 S001"],
+            ["我是采购，2026/12/1 起用 comp-998 替代 Comp-001，采购工厂 S001。"],
+        ):
+            with self.subTest(messages=messages):
+                complete = self.request("/api/workflow/dialogue", {"messages": messages})
+                self.assertEqual(complete["fields"], {**expected, "effective_date": "2026-12-01", "planning_plant": "S001"})
+                self.assertEqual(complete["missing"], [])
+        ambiguous = self.request("/api/workflow/dialogue", {"messages": [
+            "我是采购，Comp-001 到货晚，改用 COMP-998 或 COMP-999，2026/12/1 生效。",
+        ]})
+        self.assertEqual(ambiguous["missing"], ["new_component"])
+        self.assertNotIn("new_component", ambiguous["fields"])
+
+    def test_data_preparation_uses_the_same_parameters_before_and_after_import(self):
+        before = self.preflight()
+        self.import_bom()
+        after = self.preflight()
+        self.assertFalse(before["ready"])
+        self.assertTrue(after["ready"])
+        self.assertEqual(before["data_preparation"]["fields"], after["data_preparation"]["fields"])
+        fields = {item["key"]: item["value"] for item in after["data_preparation"]["fields"]}
+        self.assertEqual(fields["role"], "采购")
+        self.assertEqual(fields["old_component"], "PART-OLD")
+        self.assertEqual(fields["new_component"], "PART-NEW")
+        self.assertEqual(fields["effective_date"], "2026-12-01")
+        empty = {item["key"]: item["status"] for item in before["data_preparation"]["sources"]}
+        self.assertEqual(empty, {"bom": "需补资料", "purchases": "需补资料", "receipts": "需补资料"})
+        imported = {item["key"]: item["status"] for item in after["data_preparation"]["sources"]}
+        self.assertEqual(imported, {"bom": "已找到目标物料", "purchases": "待核", "receipts": "待核"})
+        other_plant = self.preflight(draft={"planning_plant": "UNRELATED-PLANT"})
+        isolated = {item["key"]: item["status"] for item in other_plant["data_preparation"]["sources"]}
+        self.assertEqual(isolated["purchases"], "需补资料")
+        engineering = self.preflight(role="engineering", draft=QUERY)
+        self.assertFalse(engineering["ready"])
+        self.assertEqual([item["key"] for item in engineering["data_preparation"]["sources"]], ["ebom", "references"])
