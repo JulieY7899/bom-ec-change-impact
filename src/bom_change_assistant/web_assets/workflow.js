@@ -407,8 +407,21 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
   function transferRows() {
     if (!collection) return [];
     const rows = [...collection.rows];
-    if (collection.cleared.includes("new_component") && form.elements.new_component.value) {
-      rows.push({ field: "new_component", label: "新组件", display: "清空，待确认替代件" });
+    const clearable = {
+      role: "业务角色",
+      change_type: "变更类型",
+      old_component: "原组件",
+      new_component: "新组件",
+      target_parent: "目标父件",
+      effective_date: "拟生效日期",
+      old_effective_date: "原生效日期",
+      old_quantity: "原用量",
+      new_quantity: "新用量",
+    };
+    for (const field of collection.cleared) {
+      if (Object.hasOwn(clearable, field) && form.elements[field]?.value) {
+        rows.push({ field, label: clearable[field], display: "清空，待确认" });
+      }
     }
     const scopeChanges = ["product", "plant", "engineering_version"].some((field) =>
       collection.fields[field] && form.elements[field].value
@@ -455,7 +468,7 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
       applied.textContent = "";
       status.textContent = "";
       renderTransfer();
-      if (next.rows.length) invalidateDraft("对话已更新，请核对待填字段。");
+      if (next.rows.length || next.cleared.length) invalidateDraft("对话已更新，请核对待填字段。");
     } catch (error) {
       status.textContent = error.message;
     } finally {
