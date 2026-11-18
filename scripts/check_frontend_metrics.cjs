@@ -71,6 +71,24 @@ for (const check of [
   for (const expected of ['SO-TRACE / 10', '未知', '待确认关联订单', 'SRC-TRACE 第 7 行']) assert.ok(hosts.get('#report-content').textContent.includes(expected), expected);
 }
 console.log('Report consistency verified: quantity delta, two review reasons, evidence IDs, effectivity counts and unknown sales status.');
+// Keep procurement presentation covered by the existing CI frontend job.
+for (const quantity of ['20', '0', '待补数据']) {
+  const result = structuredClone(fixture);
+  const facts = ['PO-CI/00010 · EA · 截至 2026-11-30',
+    `累计净到货量：${quantity}；剩余未到货承诺：30`,
+    '覆盖待确认 · SRC-CI 工作表 2 第 7 行',
+    '复核角色：工程、采购、计划', '已批准动作：无（approved_action=null）',
+    '<img src=x onerror=alert(1)>'];
+  result.procurement_impact = {sections: [{title: '采购承诺与到货核查', lines: facts}]};
+  context.result = result;
+  vm.runInContext('renderPlanningImpact(result.planning_impact); appendProcurement(document.querySelector("#tab-planning"), result); renderReport("", result);', context);
+  for (const selector of ['#tab-planning', '#report-content']) {
+    const host = hosts.get(selector);
+    for (const fact of ['采购承诺与到货核查', ...facts]) assert.ok(host.textContent.includes(fact), `${selector}: ${fact}`);
+    assert.ok(!descendants(host).some(node => String(node.innerHTML ?? '').includes('<img src=x')), 'Purchase input must never become executable HTML');
+  }
+}
+console.log('Procurement UI verified: quantity, zero, unknown, scope, evidence, review roles and unapproved action in both views; input stays text.');
 // Exercise the real import workflow: a failed batch retains the old report;
 // a successful publication must stop showing links into the previous snapshot.
 (async () => {

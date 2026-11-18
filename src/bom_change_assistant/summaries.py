@@ -199,6 +199,8 @@ def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
         )
     if not result.get("sales_orders"):
         lines.append("- 没有发现关联记录")
+    for section in result.get("procurement_impact", {}).get("sections", []):
+        lines.extend(["", "### " + section["title"], "", *["- " + value for value in section["lines"]]])
     validation = result.get("material_validation", {})
     if validation.get("applicable"):
         lines.extend(

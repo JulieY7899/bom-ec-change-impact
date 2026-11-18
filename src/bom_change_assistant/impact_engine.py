@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import date
 from typing import Any
 
@@ -70,6 +70,16 @@ class ImpactEngine:
                 "evidence_sources": [],
             }
         result["planning_impact"] = self._planning_impact(request, result)
+        from .procurement import analyze as analyze_procurement
+        result["procurement_impact"] = analyze_procurement(
+            self.repository, [{**asdict(request), "effective_date": result["change"]["effective_date"]}]
+        )
+        if result["procurement_impact"]["business_review_required"]:
+            for view in [result, *result["directions"].values()]:
+                for warning in view.get("warnings", []):
+                    if warning["code"] == "NO_PROCUREMENT":
+                        warning["code"] = "PROCUREMENT_REVIEW"
+                        warning["message"] = "已匹配采购证据；请核查采购行、到货覆盖和差异，取消条件与切换仍需工程、采购、计划共同确认。"
         result["manufacturing_impact"] = self._manufacturing_impact(
             request, result
         )

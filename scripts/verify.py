@@ -38,7 +38,7 @@ def main() -> int:
     record = {
         "build": BUILD_ID,
         "version": __version__,
-        "upstream_base": "0a57eb6ecff98df3164737e05edb059e8b21628f",
+        "upstream_base": "1f84bded9d0eaf0048fefe46b05eba66f4e238dc",
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "python": platform.python_version(),
         "platform": platform.system(),

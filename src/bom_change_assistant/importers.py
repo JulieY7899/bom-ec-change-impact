@@ -31,6 +31,10 @@ def classify_source(headers: list[str]) -> str:
     def has(*names: str) -> bool:
         return all(normalize_header(name) in values for name in names)
 
+    if has("采购数据类型"):
+        return "procurement_data"
+    if has("物料", "工厂", "库位", "采购总量", "已到货量", "剩余采购承诺", "可取消"):
+        return "procurement_summary"
     if has(
         "场景编号",
         "数据属性",
@@ -187,9 +191,15 @@ class WorkbookImporter:
                 if source_type == "unrecognized" and not headers:
                     continue
                 source_types.append(source_type)
-                seen, imported, sheet_warnings = self._import_sheet(
-                    connection, source_id, source_type, headers, rows
-                )
+                if source_type in {"procurement_data", "procurement_summary"}:
+                    from .procurement import import_rows
+                    seen, imported, sheet_warnings = import_rows(
+                        connection, source_id, sheet_count, headers, rows, source_type == "procurement_summary"
+                    )
+                else:
+                    seen, imported, sheet_warnings = self._import_sheet(
+                        connection, source_id, source_type, headers, rows
+                    )
                 total_seen += seen
                 total_imported += imported
                 warnings.extend(sheet_warnings)

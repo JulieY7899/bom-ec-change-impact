@@ -10,6 +10,7 @@ from typing import Any, Iterator
 
 from .normalization import safe_text
 from .privacy import PrivacyKey
+from .procurement import SCHEMA as PROCUREMENT_SCHEMA
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -230,7 +231,10 @@ CREATE INDEX IF NOT EXISTS idx_change_log_created
     ON change_log(created_at DESC);
 """
 
+SCHEMA += PROCUREMENT_SCHEMA
+
 DATA_TABLES = (
+    "procurement_records",
     "analysis_runs",
     "planning_supply_scenarios",
     "aliases",
