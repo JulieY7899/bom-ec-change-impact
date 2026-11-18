@@ -59,54 +59,73 @@ SCOPE_HINTS = {
 }
 
 
-def _replacement(question):
-    part = rf"(?<![A-Za-z0-9_./-])({ID_WORD})(?![A-Za-z0-9_./-])"
-    when = r"(?:已经|今天|明天|后天|本周|这周|目前|暂时|现在|这批|20\d{2}[-年/]\d{1,2}[-月/]\d{1,2}日?)?"
-    shortage = (r"(?:到不了货?|到不(?:了|齐)|到货晚|到货延期|没(?:有)?到货|不能到货|交不了货|"
-                r"停供|缺货|断货|缺料|短缺|买不到|采购不到|采购来不及|"
-                r"(?:要到|要等到|得等到)\s*20\d{2}[-年/]\d{1,2}[-月/]\d{1,2}日?\s*才(?:能)?(?:到货|交货)|"
-                r"(?:无法|不能|来不及|没法)(?:按时|及时|按期)?(?:采购|到货|供应|交货))")
-    material_label = r"(?:(?:原|新|旧)?(?:物料|组件|料号|采购件)\s*)?"
-    forward = r"(?:替换为|替换成|更换为|更换成|替代为|换为|换成|改用|改成|改采|改订)"
-    substitute = r"(?:替代|代替|替换|取代)"
-    label = r"(?:替代(?:采购件|物料|料号|件|料)|替换件|备选料号)"
-    old_parts, new_parts = set(), set()
-    ambiguous_target = False
-    for match in re.finditer(rf"{part}\s*{when}\s*{shortage}", question):
-        old_parts.add(match[1].upper())
+PART = rf"(?<![A-Za-z0-9_./-])({ID_WORD})(?![A-Za-z0-9_./-])"
+MATERIAL_SUFFIX = r"(?:\s*(?:这(?:颗|个|款|种)(?:料(?:件)?|物料|组件)|组件|物料|料件|采购件))?"
+MATERIAL_LABEL = r"(?:(?:原|新|旧)?(?:物料|组件|料号|采购件|料件|件|料)\s*)?"
+ALTERNATIVE = r"\s*(?:或者|或|还是|、)\s*"
+NEGATION = r"(?:先)?(?:不(?:要|能|想|打算|考虑|再)?|无需|暂不|取消)\s*$"
+SUPPLY_TIME = r"(?:已经|今天|明天|后天|本周|这周|目前|暂时|现在|这批|20\d{2}[-年/]\d{1,2}[-月/]\d{1,2}日?)?"
+SHORTAGE = (r"(?:到不了货?|到不(?:了|齐)|到货晚|到货延期|没(?:有)?到货|不能到货|交不了货|"
+            r"延迟到货|晚到货|停供|断供|缺货|断货|缺料|短缺|买不到|采购不到|采购来不及|"
+            r"(?:要到|要等到|得等到)\s*20\d{2}[-年/]\d{1,2}[-月/]\d{1,2}日?\s*才(?:能)?(?:到货|交货)|"
+            r"(?:无法|不能|来不及|没法)(?:按时|及时|按期)?(?:采购|到货|供应|交货))")
+FORWARD = r"(?:替换为|替换成|更换为|更换成|替代为|换为|换成|(?<![替更交调])换(?![料掉下到])|改用|改成|改采|改订)"
+SUBSTITUTE = r"(?:替代|代替|替换|取代|顶替|替(?![代换]))"
+USING = r"(?:使用|采用|选用|拿|用)"
+REPLACEMENT_LABEL = r"(?:替代(?:采购件|物料|料号|件|料)|替换件|备选料号)"
+FIELD_UPDATE = (
+    r"(?:(?:原|旧|新)(?:组件|物料|料号|料|件)|日期|生效日|生效|工厂|库位|用量|单耗|版本号?|行号|角色|成品)"
+    rf"(?:\s*(?:从|由)(?:\s*{ID_WORD})?)?\s*$"
+)
+NON_MATERIAL = r"(?:成品(?:编号|料号)?|(?:采购)?工厂|库位|版本(?:号)?|(?:采购|销售|生产)?(?:订单|单号|工单)|BOM\s*行(?:号)?)\s*[:=]?\s*$"
 
-    # Bind the complement to the change verb even when the subject was mentioned
-    # in a preceding supply clause or an earlier turn.
+
+def _replacement(question):
+    # An explicit pair has priority over a shortage mentioned for background.
+    pairs, proposed, shortages = set(), set(), set()
     patterns = (
-        (rf"{part}\s*{forward}\s*{material_label}{part}", 1, 2),
-        (rf"(?:用|采用|选用)\s*{part}\s*(?:来)?{substitute}\s*{part}", 2, 1),
-        (rf"(?:用|采用|选用)\s*{part}\s*(?:来)?{substitute}(?!\s*{ID_WORD})", 0, 1),
-        (rf"(?:{forward}|{label}\s*(?:是|为|用|[:=])?)\s*{material_label}{part}", 0, 1),
+        (rf"{USING}\s*{MATERIAL_LABEL}{PART}{MATERIAL_SUFFIX}\s*(?:来)?{SUBSTITUTE}\s*{MATERIAL_LABEL}{PART}", 2, 1),
+        (rf"{PART}{MATERIAL_SUFFIX}\s*{FORWARD}\s*{MATERIAL_LABEL}{PART}", 1, 2),
+        (rf"{USING}\s*{MATERIAL_LABEL}{PART}{MATERIAL_SUFFIX}\s*(?:来)?{SUBSTITUTE}(?!\s*{ID_WORD})", 0, 1),
+        (rf"(?:{FORWARD}|{REPLACEMENT_LABEL}\s*(?:是|为|用|[:=])?)\s*{MATERIAL_LABEL}{PART}", 0, 1),
     )
+    ambiguous_target = False
     for pattern, old_index, new_index in patterns:
         for match in re.finditer(pattern, question):
-            prefix = question[:match.start()].rstrip()
-            if re.search(r"(?:不|不要|不能|不想|不打算|无需|不考虑)$", prefix):
+            before = question[:match.start()].rstrip()
+            if re.search(NEGATION, before) or re.search(FIELD_UPDATE, before):
                 continue
-            # Field corrections like “拟生效日改成 …” must retain their own meaning.
-            if not old_index and re.search(r"(?:(?:原|旧|新)(?:组件|物料|料号|件)|日期|生效日|生效|工厂|库位|用量|版本号?|行号|角色|成品)$", prefix):
+            new = match[new_index]
+            if re.fullmatch(r"20\d{2}-\d{1,2}-\d{1,2}", new):
                 continue
             if old_index:
                 old = match[old_index]
-                if not re.fullmatch(r"20\d{2}-\d{1,2}-\d{1,2}", old):
-                    old_parts.add(old.upper())
-            new_parts.add(match[new_index].upper())
+                if (re.fullmatch(r"20\d{2}-\d{1,2}-\d{1,2}", old)
+                        or re.search(NON_MATERIAL, question[:match.start(old_index)])):
+                    continue
+                pairs.add(old.upper())
+                alternatives = question[match.end(old_index):] if old_index > new_index else ""
+                extra_old = re.match(rf"{MATERIAL_SUFFIX}{ALTERNATIVE}{MATERIAL_LABEL}{PART}", alternatives)
+                if extra_old:
+                    pairs.add(extra_old[1].upper())
+            proposed.add(new.upper())
             tail = question[match.end(new_index):]
-            if re.match(rf"\s*(?:或(?:者)?|、|还是)\s*{ID_WORD}", tail):
-                ambiguous_target = True
+            ambiguous_target |= bool(re.match(rf"{MATERIAL_SUFFIX}{ALTERNATIVE}{MATERIAL_LABEL}{PART}", tail))
+    for match in re.finditer(rf"{PART}{MATERIAL_SUFFIX}\s*{SUPPLY_TIME}\s*(?:都|均|也)?\s*{SHORTAGE}", question):
+        if re.search(NON_MATERIAL, question[:match.start()]):
+            continue
+        shortages.add(match[1].upper())
+        previous = re.search(rf"{PART}{MATERIAL_SUFFIX}\s*(?:和|与|及|、)\s*$", question[:match.start()])
+        if previous:
+            shortages.add(previous[1].upper())
 
     draft = {}
-    if len(old_parts) == 1:
-        draft["old_component"] = next(iter(old_parts))
-    if new_parts:
+    if subjects := pairs or shortages:
+        draft["old_component"] = next(iter(subjects)) if len(subjects) == 1 else ""
+    choice = re.search(rf"(?:选(?:用)?|考虑用)\s*{PART}{ALTERNATIVE}{PART}\s*(?:来)?{SUBSTITUTE}", question)
+    if proposed or choice:
         draft["change_type"] = "replace"
-        # An unresolved choice withdraws any previously proposed replacement.
-        draft["new_component"] = next(iter(new_parts)) if len(new_parts) == 1 and not ambiguous_target else ""
+        draft["new_component"] = next(iter(proposed)) if len(proposed) == 1 and not (ambiguous_target or choice) else ""
     return draft
 
 
@@ -134,10 +153,26 @@ def _suggest(question):
     return draft
 
 
+ROLE_ALIASES = {**ROLE_LABELS, "生产": "manufacturing", "生产现场": "manufacturing",
+                "制造工程": "engineering", "ME": "engineering"}
+ROLE_PATTERN = "|".join(sorted(ROLE_ALIASES, key=len, reverse=True))
+
+
+def explicit_role(question):
+    candidates = set()
+    for pattern in (
+        rf"(?:从|切换到|改用|换个?|站在)\s*({ROLE_PATTERN})\s*(?:的?视角|的?角度|这边看|看)",
+        rf"(?:我是|我这边是|我负责|角色\s*[:=]?)\s*({ROLE_PATTERN})(?=部门|这边|部|[,，。\s]|$)",
+        rf"^\s*(?:我们)?({ROLE_PATTERN})(?=角度|视角|看一下|来看|这边|部门|部[,，。\s]|\s*[,，:：]|$)",
+    ):
+        candidates.update(ROLE_ALIASES[match[1]] for match in re.finditer(pattern, question))
+    return candidates
+
+
 def _role(question):
-    preferred = re.search(r"(?:从\s*(研发|采购|销售|制造|工程)\s*(?:角度|视角)|我是\s*(研发|采购|销售|制造|工程))", question)
-    if preferred:
-        return ROLE_LABELS[preferred[1] or preferred[2]]
+    explicit = explicit_role(question)
+    if explicit:
+        return next(iter(explicit)) if len(explicit) == 1 else ""
     matches = [key for key, words in KEYWORDS.items()
                if any(word in question.casefold() for word in words)]
     return matches[0] if len(matches) == 1 else ""

@@ -11,24 +11,30 @@ MAX_TURNS = 30
 MAX_MESSAGE = 500
 DATE = r"(?<!\d)(20\d{2})\s*[-年/]\s*(\d{1,2})\s*[-月/]\s*(\d{1,2})(?!\d)(?:\s*日)?"
 NUMBER = r"(?:\d+(?:\.\d+)?|\.\d+)"
-ROLE = "|".join(workflow.ROLE_LABELS)
+QUANTITY = r"(?:每件用量|用量|单耗)"
+UNIT = r"(?:个|件|颗|套|克|千克|公斤|米)?"
+EFFECTIVE = r"(?:拟生效(?:日(?:期)?)?|生效(?:日(?:期)?)?|切换(?:日(?:期)?)?|实施日(?:期)?)"
+ADD = r"(?:新增|添加|加装|增加|(?:再)?加(?:上)?(?:一个|一颗|一件))"
+EFFECTIVITY_PAIR = rf"生效(?:日(?:期)?)?\s*(?:从|由)\s*({DATE})\s*(?:改为|改到|改成|延后到|推迟到|提前到|到)\s*({DATE})"
+SUPPLY_DATE = r"(?:到货|交货|交付|交期|补货|收货|采购日期|需求日期)(?:日(?:期)?)?"
+CHANGE_TO = r"(?:改为|改成|改到|调整到|调整为|推到|延期到|调到|定在|暂定|为|是|在|[:=])"
 FIELD_HINTS = {
     **workflow.SCOPE_HINTS,
     "plant": r"(?:工程版本)?工厂(?:代码)?",
     "engineering_version": r"(?:工程版本|EBOM\s*版本|版本号|版本)",
     "target_bom_row": r"(?:目标\s*)?(?:BOM\s*行(?:号)?|行号)",
-    "old_component": r"(?:(?:原|旧)(?:组件|物料|料号|件)|原来用的)",
-    "new_component": r"(?:新(?:组件|物料|料号|件)|替代(?:采购件|件|料号))",
+    "old_component": r"(?:(?:原|旧)(?:组件|物料|料号|件|料)|原来用的)",
+    "new_component": r"(?:新(?:组件|物料|料号|件|料)|替代(?:采购件|件|料号))",
     "target_parent": r"(?:目标\s*)?父件(?:号|物料)?",
     "planning_plant": r"采购工厂(?:代码)?",
     "storage_location": r"(?:采购)?库位(?:代码)?",
 }
 ACTION_WORDS = {
-    "replace": r"替换(?:组件)?|换料",
+    "replace": r"替换(?:组件)?|替代|更换|换料",
     "remove": r"删除(?:组件)?|移除(?:组件)?",
     "add": r"新增(?:组件)?|添加(?:组件)?",
-    "quantity": r"(?:修改|调整|变更)用量|用量(?:从|改)",
-    "effectivity": r"(?:修改|改变|调整|变更)生效(?:日期|日)",
+    "quantity": r"(?:修改|调整|变更)(?:用量|单耗)|(?:用量|单耗)(?:从|改)",
+    "effectivity": r"(?:修改|改变|调整|变更)生效(?:日期|日)?",
 }
 ROLE_PROMPT = "这次从哪个视角核查？可以回复研发、采购、销售、制造或工程。"
 ACTION_PROMPT = "你打算替换、删除、新增组件，还是调整用量或生效日期？"
@@ -71,7 +77,7 @@ def _material_edits(message):
         label = FIELD_HINTS[field]
         part = workflow.ID_WORD
         edit = (rf"{label}\s*(?:(?:从|由)\s*{part}\s*(?:改为|改成|换成)|"
-                rf"(?:不是\s*{part}|(?:我)?(?:说错|报错|写错|填错)了?)\s*[,，、]?\s*(?:应该是|应为|而是|是))"
+                rf"(?:不是\s*{part}|(?:我)?(?:说错|报错|写错|填错)了?)\s*[,，、]?\s*(?:应该是|应为|而是|是|改成|改为|正确的是))"
                 rf"\s*({part})")
 
         def take_value(match):
@@ -82,45 +88,63 @@ def _material_edits(message):
     return message, edits
 
 
-def _new_details(message, draft, expected):
-    proposal, edits = _material_edits(message)
-    details = {key: value for key, value in workflow._suggest(proposal).items()
-               if key in ("change_type", "old_component", "new_component")}
+def _effective_date(message, expected):
     dates = list(re.finditer(DATE, message))
-    effective_dates = []
+    explicit = []
     for match in dates:
-        before = message[:match.start()]
-        after = message[match.end():]
-        if (re.search(r"(?:生效(?:日(?:期)?)?|切换日)\s*(?:改为|改成|定在|为|是|[:=])?\s*$", before)
-                or re.match(r"\s*(?:起)?生效", after)):
-            effective_dates.append(match)
-    if len(effective_dates) == 1:
-        chosen = effective_dates[0]
-    elif len(dates) == 1:
-        match = dates[0]
         before = re.split(r"[,，;；。\n]", message[:match.start()])[-1]
         after = re.split(r"[,，;；。\n]", message[match.end():])[0]
-        supply_date = (re.search(r"(?:到货|交货|交期|采购日期)(?:日(?:期)?)?\s*(?:为|是|在|[:=])?\s*$", before)
-                       or re.match(r"\s*(?:前|当天|仍|也|才(?:能)?|预计|无法|不能|没法|未能|不能及时)*"
-                                   r"(?:到货|交货|到不了|交不了)", after))
-        chosen = None if supply_date else match
-    else:
-        chosen = None
-    if chosen and (parsed := _iso(chosen)):
-        details["effective_date"] = parsed
-    role = re.search(rf"(?:从|我是|改为|切换到|角色\s*[:=]?\s*)({ROLE})(?:\s*(?:角度|视角)|(?=[，,。 ]|$))", message)
-    if role:
-        details["role"] = workflow.ROLE_LABELS[role[1]]
-    elif prefix := re.match(rf"^(?:我们)?({ROLE})(?:这边|部门|\s*[:：])", message):
-        details["role"] = workflow.ROLE_LABELS[prefix[1]]
-    elif message in workflow.ROLE_LABELS:
-        details["role"] = workflow.ROLE_LABELS[message]
-    elif "role" not in draft:
-        inferred = workflow._role(message)
-        if inferred:
-            details["role"] = inferred
+        if (re.search(rf"(?<!原){EFFECTIVE}\s*(?:{CHANGE_TO})?\s*$", before)
+                or re.match(r"\s*(?:(?:起|正式)\s*)?(?:生效|切换|起执行|开始执行)", after)):
+            # Alternatives for the same date are pending.
+            if re.match(rf"\s*(?:或(?:者)?|还是|、)\s*{DATE}", after):
+                return ""
+            explicit.append(match)
+    if explicit:
+        values = {_iso(match) for match in explicit}
+        return values.pop() if len(values) == 1 else ""
+    if len(dates) != 1:
+        return None
+    match = dates[0]
+    if re.fullmatch(DATE, message):
+        return _iso(match) if expected in {"effective_date", "old_effective_date"} else None
+    before = re.split(r"[,，;；。\n]", message[:match.start()])[-1]
+    after = re.split(r"[,，;；。\n]", message[match.end():])[0]
+    if re.search(SUPPLY_DATE, before) or re.match(
+        rf"\s*(?:前|当天|仍|也|才(?:能)?|预计|无法|不能|没法|未能|要|不)*"
+        rf"\s*(?:{SUPPLY_DATE}|到不了|交不了)", after
+    ):
+        return None
+    # A date leading a proposed operation can be its effective date.
+    if not before.strip() or (before.rstrip().endswith(("自", "从")) and after.lstrip().startswith("起")) or re.match(r"\s*(?:起|开始|把|对|用|替换|换料|删除|移除|新增|调整)", after):
+        return _iso(match)
+    return None
+
+
+def _new_details(message, draft, expected):
+    proposal, edits = _material_edits(message)
+    # Erase labeled scope identifiers before binding adjacent material numbers.
+    # They are collected separately from the original message.
+    identifiers = "|".join(
+        FIELD_HINTS[field] for field in ("product", "plant", "engineering_version", "target_bom_row",
+                                         "planning_plant", "storage_location")
+    )
+    proposal = re.sub(rf"(?:{identifiers}|(?:采购|生产|销售)?(?:订单|单号|工单))"
+                      rf"\s*[:=]?\s*{workflow.PART}", " ", proposal, flags=re.I)
+    details = workflow._replacement(proposal)
+    parsed = _effective_date(message, expected)
+    if parsed is not None:
+        date_field = "old_effective_date" if expected == "old_effective_date" and re.fullmatch(DATE, message) else "effective_date"
+        details[date_field] = parsed
+    roles = workflow.explicit_role(message)
+    if roles:
+        details["role"] = next(iter(roles)) if len(roles) == 1 else ""
+    elif "role" not in draft and (inferred := workflow._role(message)):
+        details["role"] = inferred
     phrases = [kind for kind, pattern in ACTION_WORDS.items()
-               if re.fullmatch(pattern, message) or re.search(rf"(?:想|计划|打算|拟|(?<!不)要)\s*(?:{pattern})", message)]
+               if re.fullmatch(pattern, message) or re.search(
+                   rf"(?:想|计划|打算|拟|(?<!不)要)(?:于|在)?\s*(?:{DATE}\s*)?(?:{pattern})", proposal
+               )]
     if not details.get("change_type") and len(phrases) == 1:
         details["change_type"] = phrases[0]
     replacement_unresolved = details.get("new_component") == ""
@@ -129,19 +153,29 @@ def _new_details(message, draft, expected):
             continue
         # Keep a purchase plant out of the EBOM scope.
         prefix = r"(?<!采购)" if field == "plant" else ""
-        found = re.findall(
-            rf"{prefix}{label}\s*(?:改为|改成|改用|换成|设为|用|是|为|[:=])?\s*({workflow.ID_WORD})",
+        found = list(re.finditer(
+            rf"{prefix}{label}\s*(?:改为|改成|改用|换成|设为|用|是|为|[:=])?\s*{workflow.PART}",
             message, re.IGNORECASE,
-        )
+        ))
+        if field == "product":
+            # “成品 A 的组件 B” describes usage. Dedicated scope fields still require a mode.
+            found = [match for match in found if not re.match(
+                r"\s*(?:下)?的?\s*(?:组件|物料|零件|料件|下)", message[match.end():]
+            )]
         if len(found) == 1:
-            details[field] = found[0]
+            match = found[0]
+            ambiguous = field in {"old_component", "new_component"} and re.match(
+                rf"{workflow.MATERIAL_SUFFIX}{workflow.ALTERNATIVE}{workflow.PART}(?!\s*行)", message[match.end():]
+            )
+            value = "" if ambiguous else match[1]
+            details[field] = value
     details.update(edits)
     if expected == "new_component" and not details.get("new_component"):
         chosen_part = re.fullmatch(rf"(?:最终|确定|确认)(?:选用|用|选)\s*({workflow.ID_WORD})", message)
         if chosen_part:
             details["new_component"] = chosen_part[1]
     if not details.get("change_type") and details.get("old_component") and details.get("new_component"):
-        if re.search(r"替换|替代|更换|换料", message):
+        if re.search(r"替换|替代|更换|换料", proposal) and not edits:
             details["change_type"] = "replace"
     if details.get("effective_date") and not re.search(r"生效", message) and any(
         details.get(field) == details["effective_date"] for field in FIELD_HINTS
@@ -154,19 +188,36 @@ def _new_details(message, draft, expected):
     ):
         details["analysis_mode"] = "engineering"
 
-    quantity = re.search(rf"用量\s*从\s*({NUMBER})\s*(?:改为|改成|调到|到)\s*({NUMBER})", message)
+    part = workflow.PART
+    suffix = workflow.MATERIAL_SUFFIX
+    quantity = re.search(rf"{QUANTITY}\s*(?:从|由)\s*({NUMBER})\s*{UNIT}\s*(?:改为|改成|调到|降到|调整为|降为|到)\s*({NUMBER})", proposal)
     if quantity:
         details.update(change_type="quantity", old_quantity=float(quantity[1]), new_quantity=float(quantity[2]))
-        subject = re.search(rf"({workflow.ID_WORD})\s*(?:的)?\s*用量\s*从", message)
-        if subject:
-            details.setdefault("old_component", subject[1])
-    for count in re.finditer(rf"(原用量|新用量)\s*(?:改为|改成|是|为|[:=])?\s*({NUMBER})", message):
-        details["old_quantity" if count[1] == "原用量" else "new_quantity"] = float(count[2])
+    for count in re.finditer(rf"(原(?:用量|单耗)|新(?:用量|单耗))\s*(?:{CHANGE_TO})?\s*({NUMBER})", message):
+        details["old_quantity" if count[1].startswith("原") else "new_quantity"] = float(count[2])
         details.setdefault("change_type", "quantity")
-    if addition := re.search(rf"(?:新增|添加)(?:组件)?\s*({workflow.ID_WORD})", message):
-        details.update(change_type="add", new_component=addition[1])
-    if re.search(r"(?:原生效|新生效|生效(?:日(?:期)?)?从)", message):
-        pair = re.search(rf"生效(?:日(?:期)?)?\s*从\s*({DATE})\s*(?:改为|改到|改成|到)\s*({DATE})", message)
+    for kind, label in (("quantity", QUANTITY), ("effectivity", EFFECTIVE)):
+        if subject := re.search(rf"{part}{suffix}\s*(?:的)?\s*{label}", proposal):
+            if details.get("change_type") == kind or (kind == "effectivity" and re.search(EFFECTIVITY_PAIR, message)):
+                details["old_component"] = edits.get("old_component", subject[1])
+
+    for pattern, kind, field in (
+        (rf"(?:删除|移除|去掉|取消使用)\s*{workflow.MATERIAL_LABEL}{part}", "remove", "old_component"),
+        (rf"{part}{suffix}\s*(?:下架|移出\s*BOM|从\s*BOM\s*删除)", "remove", "old_component"),
+        (rf"{ADD}\s*{workflow.MATERIAL_LABEL}{part}", "add", "new_component"),
+    ):
+        match = re.search(pattern, proposal, re.I)
+        if match and not re.search(workflow.NEGATION, proposal[:match.start()]):
+            if "change_type" in details and details["change_type"] != kind:
+                details["change_type"] = ""
+            else:
+                details.update({"change_type": kind, field: match[1]})
+    if details.get("change_type") == "add":
+        if parent := re.search(rf"(?:在|给|往)\s*(?:父件\s*)?{part}\s*(?:下面|下|里|中)?\s*{ADD}", message):
+            details.setdefault("target_parent", parent[1])
+
+    if re.search(r"(?:原生效|新生效|生效(?:日(?:期)?)?\s*(?:从|由))", message):
+        pair = re.search(EFFECTIVITY_PAIR, message)
         if pair:
             details["change_type"] = "effectivity"
             for name, value in (("old_effective_date", pair[1]), ("effective_date", pair[5])):
@@ -174,17 +225,20 @@ def _new_details(message, draft, expected):
                     details[name] = parsed
         else:
             for name, label in (("old_effective_date", "原生效"), ("effective_date", "新生效")):
-                match = re.search(rf"{label}(?:日(?:期)?)?\s*(?:为|是|[:=])?\s*{DATE}", message)
+                match = re.search(rf"{label}(?:日(?:期)?)?\s*(?:{CHANGE_TO})?\s*{DATE}", message)
                 if match and (parsed := _iso(match)):
                     details[name] = parsed
                     details["change_type"] = "effectivity"
-            if "old_effective_date" in details and not re.search(r"新生效", message):
-                details.pop("effective_date", None)
 
-    if expected == "old_effective_date" and re.fullmatch(DATE, message):
-        if parsed := _iso(re.fullmatch(DATE, message)):
-            details.pop("effective_date", None)
-            details["old_effective_date"] = parsed
+    if re.fullmatch(r"(?:先)?(?:不要|不用|不|取消|撤销)(?:再)?(?:换(?:料)?|换了|替换(?:了)?|这次变更|本次变更)", message):
+        details.update({field: "" for field in (
+            "change_type", "effective_date", "new_component", "target_parent",
+            "old_quantity", "new_quantity", "old_effective_date",
+        )})
+    elif draft.get("change_type") == "replace" and re.fullmatch(
+        rf"{part}{workflow.ALTERNATIVE}{part}\s*(?:都在考虑|都可以|二选一|还没定)", message
+    ):
+        details["new_component"] = ""
     correction = re.fullmatch(rf"不是\s*({workflow.ID_WORD})\s*[,，、]\s*(?:是|而是)\s*({workflow.ID_WORD})", message)
     if correction:
         candidates = [field for field in FIELD_HINTS if (
@@ -194,7 +248,7 @@ def _new_details(message, draft, expected):
         if len(candidates) == 1:
             details[candidates[0]] = correction[2]
     if not details:
-        if expected in FIELD_HINTS and re.fullmatch(workflow.ID_WORD, message):
+        if expected in FIELD_HINTS and re.fullmatch(workflow.ID_WORD, message) and not re.fullmatch(DATE, message):
             details[expected] = message
         elif expected in {"old_quantity", "new_quantity"} and re.fullmatch(NUMBER, message):
             details[expected] = float(message)
@@ -241,7 +295,11 @@ def collect(messages):
         if draft.get("change_type"):
             for field, changes in CHANGE_FIELDS.items():
                 if draft["change_type"] not in changes:
-                    draft.pop(field, None)
+                    if draft.pop(field, None) is not None:
+                        cleared.add(field)
+            if (draft["change_type"] != "add" and draft.get("analysis_mode") != "engineering"
+                    and draft.pop("target_parent", None) is not None):
+                cleared.add("target_parent")
         if draft.get("analysis_mode") == "material":
             for field in (*SCOPE_FIELDS, "target_bom_row"):
                 draft.pop(field, None)
