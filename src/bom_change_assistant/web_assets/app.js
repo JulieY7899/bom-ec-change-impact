@@ -8,6 +8,9 @@ const state = {
   selectedBatchIndex: 0,
   baseEcnSequence: 4,
   effectivityLookupSequence: 0,
+  account: null,
+  accountChanging: false,
+  accountRevision: 0,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -22,8 +25,18 @@ function toast(message, isError = false) {
   toast.timer = setTimeout(() => node.classList.remove("show"), 3200);
 }
 
+function accountFetch(path, options = {}) {
+  const token = sessionStorage.getItem("bom-session");
+  if (!token) return fetch(path, options);
+  return fetch(path, {...options, headers: {...options.headers, Authorization: "Bearer " + token}});
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  const revision = state.accountRevision;
+  const response = await accountFetch(path, options);
+  if (revision === state.accountRevision && response.status === 403 && path.startsWith("/api/engineering-knowledge")) {
+    document.dispatchEvent(new Event("bom-knowledge-denied"));
+  }
   let payload;
   try {
     payload = await response.json();
@@ -185,10 +198,14 @@ async function refreshStatus() {
     renderSources(data.sources || []);
     $("#change-log-count").textContent = `${formatNumber(data.change_log_count)} 条`;
     if (data.ready && !state.result) {
-      const response = await fetch("/api/analysis/last");
+      const revision = state.accountRevision;
+      const response = await accountFetch("/api/analysis/last");
       if (response.ok) {
         const latest = await response.json();
         if (!state.result && state.status === data) {
+          if (revision !== state.accountRevision || state.accountChanging) {
+            latest.result.engineering_knowledge_available = false;
+          }
           state.batchItems = [latest];
           selectBatchItem(0);
         }
@@ -1753,7 +1770,141 @@ function renderReport(report, result = state.result) {
   ));
 }
 
+function roleLabel(role) {
+  const options = $("#workflow-form").elements.role.options;
+  return [...options].find(option => option.value === role)?.text || "";
+}
+
+function setupAccount() {
+  const form = $("#account-login");
+  const logout = $("#account-logout");
+  const message = $("#account-message");
+  const picker = $("#account-role");
+
+  function renderAccount(data) {
+    state.account = data;
+    const { identity, configured } = data;
+    const chosen = identity && roleLabel(identity.active_role);
+    $("#account-panel").classList.toggle("hidden", !configured);
+    $("#account-label").textContent = identity ? identity.username + " · " + chosen : "账号登录";
+    form.classList.toggle("hidden", Boolean(identity));
+    $("#account-controls").classList.toggle("hidden", !identity);
+    const canSwitch = (identity?.roles.length || 0) > 1;
+    $("#account-role-picker").classList.toggle("hidden", !canSwitch);
+    $("#account-role-single").classList.toggle("hidden", canSwitch);
+    $("#account-role-single").textContent = identity ? "当前角色 · " + chosen : "";
+    picker.replaceChildren(...(identity?.roles || []).map(role => new Option(roleLabel(role), role)));
+    if (identity) picker.value = identity.active_role;
+    $("#workflow-role-local").classList.toggle("hidden", configured);
+    $("#workflow-form").elements.role.disabled = configured;
+    $("#workflow-role-managed").classList.toggle("hidden", !configured);
+    $("#workflow-active-role").textContent = chosen || "请从右上角登录";
+  }
+
+  async function showAccount() {
+    try {
+      const token = sessionStorage.getItem("bom-session");
+      const revision = state.accountRevision;
+      const data = await api("/api/account");
+      if (revision !== state.accountRevision || state.accountChanging) return;
+      if (token && !data.identity) {
+        clearKnowledge();
+        sessionStorage.removeItem("bom-session");
+        location.reload();
+        return;
+      }
+      renderAccount(data);
+    } catch (error) {
+      message.textContent = error.message;
+    }
+  }
+
+  function clearKnowledge() {
+    state.accountRevision++;
+    for (const item of state.batchItems) item.result.engineering_knowledge_available = false;
+    if (state.result) state.result.engineering_knowledge_available = false;
+    document.dispatchEvent(new Event("bom-knowledge-denied"));
+  }
+
+  async function restoreKnowledge() {
+    if (state.account?.identity?.active_role !== "engineering") return;
+    const result = state.result;
+    const revision = state.accountRevision;
+    if (!result?.analysis_id) return;
+    const current = await api("/api/analysis/by-id?analysis_id=" + encodeURIComponent(result.analysis_id));
+    if (revision === state.accountRevision && result === state.result) {
+      result.engineering_knowledge_available = current.result.engineering_knowledge_available;
+      document.dispatchEvent(new Event("bom-analysis-rendered"));
+    }
+  }
+
+  picker.addEventListener("change", async () => {
+    if (state.accountChanging || picker.value === state.account?.identity?.active_role) return;
+    state.accountChanging = true;
+    picker.disabled = true;
+    logout.disabled = true;
+    clearKnowledge();
+    document.dispatchEvent(new Event("bom-role-changing"));
+    message.textContent = "";
+    try {
+      const data = await api("/api/account/role", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({role: picker.value}),
+      });
+      sessionStorage.setItem("bom-session", data.token);
+      renderAccount({configured: true, identity: data.identity});
+      $("#account-panel").open = false;
+    } catch (error) {
+      message.textContent = error.message;
+      renderAccount(state.account);
+    } finally {
+      state.accountChanging = false;
+      picker.disabled = false;
+      logout.disabled = false;
+      document.dispatchEvent(new Event("bom-role-changed"));
+    }
+    try {
+      await restoreKnowledge();
+    } catch (error) {
+      if (!state.accountChanging) message.textContent = error.message;
+    }
+  });
+
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      const result = await api("/api/account/login", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(Object.fromEntries(new FormData(form))),
+      });
+      sessionStorage.setItem("bom-session", result.token);
+      location.reload();
+    } catch (error) {
+      message.textContent = error.message;
+      form.elements.password.value = "";
+    }
+  });
+  logout.addEventListener("click", async () => {
+    clearKnowledge();
+    try {
+      await api("/api/account/logout", {method: "POST", body: "{}"});
+      sessionStorage.removeItem("bom-session");
+      location.reload();
+    } catch (error) {
+      message.textContent = error.message;
+    }
+  });
+  showAccount();
+  const recheck = () => {
+    if (!document.hidden && sessionStorage.getItem("bom-session")) showAccount();
+  };
+  document.addEventListener("visibilitychange", recheck);
+  window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
+  window.setInterval(recheck, 60000);
+}
+
 function setup() {
+  setupAccount();
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
   $$("[data-jump]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.jump)));
   $("#choose-files").addEventListener("click", () => $("#file-input").click());
