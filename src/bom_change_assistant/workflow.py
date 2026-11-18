@@ -7,7 +7,7 @@ import re
 import unicodedata
 from datetime import date
 
-from . import engineering, knowledge, knowledge_store, procurement
+from . import department_intent, engineering, knowledge, knowledge_store, procurement
 from .normalization import coerce_date, coerce_number
 from .roles import LABELS as ROLES
 
@@ -20,19 +20,22 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 );
 """
 ENGINEERING_SEARCH_TERMS = "工程版本 EBOM BOM行 生效 替换 路径 版本引用 变更"
+STANDALONE_ROLE_LABELS = {"planning": "计划", "warehouse": "仓储", "service": "售后"}
 KEYWORDS = {
     "rd": ("研发", "设计", "用在哪里", "父件", "互换"),
     "procurement": ("采购", "承诺", "到货", "收货", "退货", "供应商"),
-    "planning": ("计划物控", "齐套", "切换缺口"),
-    "warehouse": ("仓储", "实物盘点", "隔离库"),
-    "quality": ("质量", "复验", "检验放行"),
-    "service": ("售后", "维修备件", "存量设备"),
     "sales": ("销售", "交期", "交货", "客户需求", "订单行"),
     "manufacturing": ("制造", "生产", "工单", "领料", "投料", "报工"),
     "engineering": ("工程", "ebom", "版本引用", "生效", "bom 行", "bom行"),
+    "planning": ("物料计划", "物控", "齐套", "切换缺口"),
+    "warehouse": ("仓储", "仓库", "物流", "实物盘点", "隔离库"),
+    "quality": ("质量", "质检", "复验", "检验放行"),
+    "service": ("售后", "维修备件", "存量设备"),
 }
 FOCUSES = ("采购承诺", "到货", "退货", "冲销", "供应来源", "交期", "配置",
            "投料", "领料", "工单", "报工", "版本引用", "BOM 行", "用量", "生效", "替换")
+FOCUSES += tuple(dict.fromkeys(topic for topics in department_intent.TOPICS.values()
+                              for topic, _, _ in topics))
 LABELS = {
     "role": "业务角色", "analysis_mode": "核查范围", "change_type": "变更类型", "old_component": "原组件",
     "new_component": "新组件", "target_parent": "目标父件",
@@ -155,8 +158,10 @@ def _suggest(question):
 ROLE_ALIASES = {**ROLE_LABELS, "生产": "manufacturing", "生产现场": "manufacturing",
                 "制造工程": "manufacturing", "ME": "manufacturing",
                 "物料计划": "planning", "计划": "planning", "物控": "planning", "PMC": "planning",
+                "工程研发": "engineering", "物料管理": "planning", "物料": "planning",
                 "仓储": "warehouse", "物流": "warehouse", "仓库": "warehouse",
-                "品保": "quality", "质检": "quality", "售后": "service", "服务": "service",
+                "品保": "quality", "质检": "quality", "QA": "quality", "QC": "quality",
+                "售后": "service", "服务": "service",
                 "订单管理": "sales"}
 ROLE_PATTERN = "|".join(sorted(ROLE_ALIASES, key=len, reverse=True))
 
@@ -166,9 +171,14 @@ def explicit_role(question):
     for pattern in (
         rf"(?:从|切换到|改用|换个?|站在)\s*({ROLE_PATTERN})\s*(?:的?视角|的?角度|这边看|看)",
         rf"(?:我是|我这边是|我负责|角色\s*[:=]?)\s*({ROLE_PATTERN})(?=部门|这边|部|[,，。\s]|$)",
-        rf"^\s*(?:我们)?({ROLE_PATTERN})(?=角度|视角|看一下|来看|这边|部门|部[,，。\s]|\s*[,，:：]|$)",
+        rf"(?:^|[,，。;；])\s*(?:我们)?({ROLE_PATTERN})(?=\s*(?:角度|视角|看一下|来看|这边|部门|部[,，。\s]|[,，:：]|$))",
     ):
         candidates.update(ROLE_ALIASES[match[1]] for match in re.finditer(pattern, question))
+    # Manufacturing engineering also performs explicit engineering-version reviews.
+    if (candidates == {"manufacturing"} and re.match(r"^制造工程[,，:\s]", question)
+            and re.search(r"工程版本.*BOM\s*行", question, re.I)
+            and not re.search(r"工单|领料|在制|工序", question)):
+        return {"engineering"}
     return candidates
 
 
@@ -385,6 +395,9 @@ def _data_preparation(repository, context):
     if gap := DEPARTMENT_GAPS.get(role):
         key, label, detail = gap
         add(key, label, "需补资料", detail)
+    if role in {"warehouse", "quality", "service"}:
+        for index, (label, _, evidence) in enumerate(department_intent.TOPICS[role]):
+            add(f"department_{index}", label, "需人工核对", evidence)
     return {"fields": fields, "sources": sources}
 
 
@@ -509,7 +522,7 @@ def _planning_facts(result, context):
     return lines
 
 
-def _answer(context, result):
+def _answer(context, result, *, account_managed):
     role = context["role"]
     check = result.get("engineering_check")
     metrics = result["metrics"]
@@ -568,9 +581,8 @@ def _answer(context, result):
         "quality": ["核对新料验证、在制品和库存批次，确认复验、返工、隔离或放行条件。"],
         "service": ["结合已交付设备版本、维修 BOM 和备件记录，确认替代兼容性与旧件保留范围。"],
     }[role]
-    return {
-        "role": ROLES[role], "facts": lines, "review_actions": actions,
-    }
+    label = ROLES[role] if account_managed else STANDALONE_ROLE_LABELS.get(role, ROLES[role])
+    return {"role": label, "facts": lines, "review_actions": actions}
 
 
 def _report_text(value):
@@ -584,9 +596,9 @@ def _display_field(field, value):
     return CHANGE_TYPES[value] if field == "change_type" else value
 
 
-def finish(repository, context, item):
+def finish(repository, context, item, *, account_managed=False):
     result = item["result"]
-    answer = _answer(context, result)
+    answer = _answer(context, result, account_managed=account_managed)
     stages = [
         {"name": "输入确认", "status": "完成", "detail": f'{answer["role"]} · {CONTRACT}'},
         {"name": "数据预检", "status": "有待核项" if context["issues"] else "完成",
