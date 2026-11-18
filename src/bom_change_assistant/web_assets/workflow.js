@@ -542,10 +542,11 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
       applied.textContent = "";
       status.textContent = "";
       renderTransfer();
-      if (next.intake && next.intake.status !== "impact_review") {
-        invalidateDraft(next.intake.status === "outside_scope"
-          ? "这项订单决定请按销售流程核实。"
-          : "订单问题待澄清。请按对话提示补充资料。");
+      if (next.status === "outside_scope" || next.intake?.status === "outside_scope") {
+        focus = [];
+        invalidateDraft(next.reply);
+      } else if (next.intake && next.intake.status !== "impact_review") {
+        invalidateDraft("订单问题待澄清。请按对话提示补充资料。");
       } else if (next.department_intent?.status === "evidence_review") {
         invalidateDraft("请先核对对话中列出的证据和范围。");
       } else if (next.rows.length || next.cleared.length) {

@@ -582,6 +582,49 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("SO-22", run["report"])
         self.assertNotIn(messages[0], run["report"])
 
+    def test_dialogue_declines_outside_scope_without_fields_prompts_or_evidence(self):
+        self.login_as("engineering")
+        for question in (
+            "明天会下雨吗",
+            "BOM 助手，明天会下雨吗",
+            "帮我看看这段 Python 代码",
+            "采购这边，物料 MAT-1 的报价是多少",
+            "请在 SAP 中发布工程版本 ENG-V1",
+            "帮我把 BOM 行 L-10 正式发布",
+            "请审批 PART-A 换成 PART-B 的 BOM 变更",
+            "什么是 BOM",
+        ):
+            with self.subTest(question=question):
+                answer = self.request("/api/workflow/dialogue", {"messages": [question]})
+                self.assertEqual(answer["status"], "outside_scope")
+                self.assertEqual(answer["reply"], "这个问题超出 BOM 变更影响核查的范围，我无法处理。")
+                self.assertEqual(answer["fields"], {})
+                for key in ("rows", "cleared", "missing", "focus"):
+                    self.assertEqual(answer[key], [])
+                self.assertNotIn("department_intent", answer)
+
+    def test_outside_scope_turn_does_not_change_a_valid_draft(self):
+        start = "采购角度，COMP-001换成COMP-998会有什么影响"
+        interrupt = "请审批 COMP-001 换成 COMP-999 的工程变更"
+        messages = [start, interrupt]
+        rejected = self.request("/api/workflow/dialogue", {"messages": messages})
+        self.assertEqual(rejected["status"], "outside_scope")
+        recovered = self.request("/api/workflow/dialogue", {"messages": [*messages, "2026/12/1"]})
+        self.assertEqual(recovered["fields"]["new_component"], "COMP-998")
+        self.assertEqual(recovered["fields"]["effective_date"], "2026-12-01")
+        self.assertFalse(recovered["missing"])
+
+    def test_declined_commercial_order_can_be_followed_by_a_new_bom_question(self):
+        messages = ["销售角度，信用额度冻结了，SO-55 能下单吗"]
+        rejected = self.request("/api/workflow/dialogue", {"messages": messages})
+        self.assertEqual(rejected["status"], "outside_scope")
+        recovered = self.request("/api/workflow/dialogue", {
+            "messages": [*messages, "销售角度，PART-A 换成 PART-B，2026/12/1 生效，影响哪些订单行"],
+        })
+        self.assertNotIn("intake", recovered)
+        self.assertEqual(recovered["fields"]["new_component"], "PART-B")
+        self.assertFalse(recovered["missing"])
+
     def test_dialogue_drops_stale_row_and_uses_prompted_bare_id(self):
         messages = [
             "从销售角度，2026-12-01 把 PART-OLD 换成 PART-NEW，成品 FG-T1、"

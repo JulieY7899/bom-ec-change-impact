@@ -25,7 +25,6 @@ BOM_KIND = {
 }
 UNCERTAIN = r"(?:不确定|不清楚|不知道|还没确认|待确认|未知)"
 GENERIC = {"BOM", "EBOM", "ORDER", "SO", "SAP", "ERP", "PLM"}
-OUTSIDE_REPLY = "这个问题请由销售订单流程或对应负责人核实。BOM 助手能检查工程变更对物料、配置和关联订单的影响。"
 ORDER_REPLY = "我可以核查 BOM 变更及关联订单的影响。下单决定由销售订单流程确认。"
 PROMPTS = {
     "bom_context": "这次下单疑问是因为 BOM 或工程版本发生了变更吗？可以补充具体原因。",
