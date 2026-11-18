@@ -37,7 +37,7 @@ ACTION_WORDS = {
     "quantity": r"(?:修改|调整|变更)(?:用量|单耗)|(?:用量|单耗)(?:从|改)",
     "effectivity": r"(?:修改|改变|调整|变更)生效(?:日期|日)?",
 }
-ROLE_PROMPT = "这次从哪个视角核查？可以回复工程、研发、采购、计划、仓储、制造、质量、销售或售后。"
+ROLE_PROMPT = "这次从哪个视角核查？可以回复" + "、".join(workflow.ROLES.values()) + "。"
 ACTION_PROMPT = "你打算替换、删除、新增组件，还是调整用量或生效日期？"
 PROMPTS = {
     "role": ROLE_PROMPT,
@@ -299,7 +299,7 @@ def collect(messages, *, active_role=None):
         last = _new_details(message, draft, expected)
         if active_role and "role" in last:
             if last.pop("role") != active_role:
-                role_notice = f"按当前账号的{workflow.ROLES[active_role][0]}视角整理。"
+                role_notice = f"按当前账号的{workflow.ROLES[active_role]}视角整理。"
         for field in ("old_quantity", "new_quantity"):
             if isinstance(last.get(field), float) and not isfinite(last[field]):
                 last[field] = ""
@@ -361,9 +361,9 @@ def collect(messages, *, active_role=None):
         department = department_intent.summarize(draft.get("role"), normalized_messages, scope, draft, intake)
     rows = []
     for field, label in workflow.LABELS.items():
-        if field in draft:
+        if field in draft and (field != "role" or not active_role):
             value = draft[field]
-            display = workflow.ROLES[value][0] if field == "role" else workflow._display_field(field, value)
+            display = workflow.ROLES[value] if field == "role" else workflow._display_field(field, value)
             rows.append({"field": field, "label": label, "display": display})
     recognized = [str(row["display"]) if row["field"] in ("role", "change_type")
                   else f'{row["label"]} {row["display"]}' for row in rows if row["field"] in last]

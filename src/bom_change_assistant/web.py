@@ -592,7 +592,7 @@ class Handler(BaseHTTPRequestHandler):
             defaults = self.state.repository.draft_defaults()
             draft = {**context["draft"], "bom_version": defaults["default_bom_version"]}
             item = self.state.analysis.analyze_changes([draft])["items"][0]
-            output = workflow.finish(self.state.repository, context, item)
+            output = workflow.finish(self.state.repository, context, item, account_managed=bool(identity))
             if payload.get("include_analysis") is True:
                 output["analysis"] = {
                     "result": {**item["result"], "engineering_knowledge_available": context["role"] == "engineering" and self._is_engineer()},
