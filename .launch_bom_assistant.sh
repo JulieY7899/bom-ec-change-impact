@@ -29,7 +29,7 @@ is_ready() {
 is_ready_at() {
   local candidate_url="$1"
   /usr/bin/curl -fsS --max-time 2 "$candidate_url/api/health" 2>/dev/null |
-    /usr/bin/grep -q '"build": "portfolio-v1.2-20261116-b19"'
+    /usr/bin/grep -q '"build": "portfolio-v1.3-20261118-b22"'
 }
 
 if [[ -r "$URL_FILE" ]]; then

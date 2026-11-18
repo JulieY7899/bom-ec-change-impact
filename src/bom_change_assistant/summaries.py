@@ -41,6 +41,11 @@ def _business_text(value: Any) -> str:
 
 
 def rule_summary(result: dict[str, Any]) -> str:
+    if result.get("engineering_only"):
+        impact = result.get("engineering_impact", {})
+        checks = len(impact.get("checks", [])) or 1
+        orders = len(impact.get("unique_orders", []))
+        return f"已核查 {checks} 项工程版本行，去重后版本引用命中 {orders} 个。工程结构、订单引用及处置保持原值。"
     change = result["change"]
     metrics = result["metrics"]
     risk = result["risk"]
@@ -127,6 +132,18 @@ def role_checklists(result: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
+    if result.get("engineering_only"):
+        lines = [
+            "# BOM 工程版本与订单引用核查报告", "",
+            f"- 报告编号：{result['analysis_id']}",
+            f"- 核查批次：{result['draft_id']}",
+            f"- 核查版本：{result['bom_version']}",
+            "", rule_summary(result),
+        ]
+        _append_engineering(lines, result)
+        for section in result.get("procurement_impact", {}).get("sections", []):
+            lines.extend(["", "### " + section["title"], "", *["- " + value for value in section["lines"]]])
+        return "\n".join(lines) + "\n"
     metrics = result["metrics"]
     risk = result["risk"]
     checklists = result.get("checklists") or role_checklists(result)
@@ -167,6 +184,7 @@ def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
         "",
     ]
     lines.extend(f"- {_business_text(reason)}" for reason in risk["reasons"])
+    _append_engineering(lines, result)
     checks = result.get("change_checks") or [result]
     for checked in checks:
         prefix = f"{checked.get('ecn', '本项')} · "
@@ -377,3 +395,13 @@ def markdown_report(result: dict[str, Any], ai_text: str = "") -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _append_engineering(lines: list[str], result: dict[str, Any]) -> None:
+    for section in result.get("engineering_impact", {}).get("sections", []):
+        # Business identifiers are data even when they contain Markdown syntax.
+        def literal(value: str) -> str:
+            return re.sub(r"([_#])", lambda match: chr(92) + match[0], value)
+
+        lines.extend(["", "### " + literal(section["title"]), "",
+                      *["- " + literal(value) for value in section["lines"]]])

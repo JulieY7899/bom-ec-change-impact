@@ -55,6 +55,7 @@ const sourceTypeLabels = {
   sales_master_reference: "销售视图",
   assignment_reference: "任务清单分配",
   source_list_reference: "供应来源清单",
+  engineering_data: "工程版本、BOM 行与订单引用",
   procurement_data: "采购行及到货流水",
   procurement_summary: "采购范围汇总",
   planning_supply_demo: "计划备料虚拟数据",
@@ -131,6 +132,7 @@ function businessText(value) {
 }
 
 function businessSummary(result) {
+  if (result.engineering_only) return result.summary;
   const metrics = result.metrics || {};
   const riskLevel = result.risk?.level || "—";
   const base = result.analysis_kind === "bom_version"
@@ -156,6 +158,11 @@ async function refreshStatus() {
   try {
     const data = await api("/api/status");
     state.status = data;
+    const catalog = await api("/api/engineering-versions");
+    state.engineeringVersions = catalog.versions;
+    updateEngineeringVersions();
+    fillEngineeringRow();
+    renderEngineeringCatalog(catalog.versions);
     $("#snapshot-state").textContent = data.ready ? "分析数据已就绪" : "等待导入";
     $("#m-valid-rows").textContent = formatNumber(data.valid_bom_rows);
     $("#m-tops").textContent = formatNumber(data.top_materials);
@@ -247,6 +254,21 @@ function renderBomVersions(items) {
   });
   if (multiVersionCount) {
     $("#bom-version-summary").textContent += ` · ${multiVersionCount} 个成品来自多个导入来源`;
+  }
+}
+
+function renderEngineeringCatalog(versions) {
+  $("#engineering-catalog").classList.toggle("hidden", !versions.length);
+  const table = $("#engineering-catalog-rows");
+  table.replaceChildren();
+  for (const item of versions) {
+    const row = document.createElement("tr");
+    for (const value of [item.product, item.plant || "未指定", item.engineering_version, item.rows.length]) {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.appendChild(cell);
+    }
+    table.appendChild(row);
   }
 }
 
@@ -434,6 +456,62 @@ function scheduleOriginalEffectivityLookup(delay = 350) {
   );
 }
 
+function selectOptions(select, placeholder, items, describe, key) {
+  const previous = select.value;
+  const blank = new Option(placeholder, "");
+  select.replaceChildren(blank);
+  items.forEach((item) => select.add(new Option(describe(item), key(item))));
+  if ([...select.options].some((option) => option.value === previous)) select.value = previous;
+}
+
+function engineeringKey(version) {
+  return JSON.stringify([version.product, version.plant, version.engineering_version]);
+}
+
+function selectedEngineeringVersion() {
+  return (state.engineeringVersions || []).find(
+    (version) => engineeringKey(version) === $("#engineering-version").value,
+  );
+}
+
+function updateEngineeringVersions() {
+  selectOptions($("#engineering-version"), "选择工程版本", state.engineeringVersions || [],
+    (version) => `${version.product} / ${version.plant || "未指定工厂"} / ${version.engineering_version}`,
+    engineeringKey);
+  updateEngineeringRows();
+}
+
+function updateEngineeringRows() {
+  const version = selectedEngineeringVersion();
+  selectOptions($("#engineering-row"), "选择目标 BOM 行", version?.rows || [],
+    (row) => `${row.row_id} · ${row.parent} → ${row.component}`, (row) => row.row_id);
+}
+
+function updateEngineeringMode() {
+  const exact = $("#engineering-mode").value === "engineering";
+  $("#engineering-fields").classList.toggle("hidden", !exact);
+  $("#ordinary-scope-note").classList.toggle("hidden", exact);
+  $("#old-component").readOnly = exact;
+  const current = $('input[name="change_type"]:checked');
+  if (exact && ["add", "effectivity"].includes(current.value)) {
+    $('input[name="change_type"][value="replace"]').checked = true;
+  }
+  for (const input of $$('input[name="change_type"]')) {
+    input.disabled = exact && ["add", "effectivity"].includes(input.value);
+  }
+  updateChangeFields();
+  if (exact) fillEngineeringRow();
+}
+
+function fillEngineeringRow() {
+  if ($("#engineering-mode").value !== "engineering") return;
+  const row = selectedEngineeringVersion()?.rows.find(
+    (item) => item.row_id === $("#engineering-row").value,
+  );
+  $("#old-component").value = row?.component || "";
+  $("#old-quantity").value = row?.quantity ?? "";
+}
+
 function updateChangeFields() {
   const type = $('input[name="change_type"]:checked').value;
   $("#old-component-field").classList.toggle("hidden", type === "add");
@@ -490,12 +568,27 @@ function currentDraftItem() {
 
 function addDraftItem(event) {
   event.preventDefault();
-  if (!state.status?.ready || !state.status?.bom_edges) {
-    toast("请先导入包含多层展开 BOM 的数据", true);
+  const exact = $("#engineering-mode").value === "engineering";
+  if (!state.status?.ready || (!exact && !state.status?.bom_edges)) {
+    toast("请先导入当前核查方式所需的 BOM 数据", true);
     showView("import");
     return;
   }
   const item = currentDraftItem();
+  if (exact) {
+    const version = selectedEngineeringVersion();
+    const row = version?.rows.find((entry) => entry.row_id === $("#engineering-row").value);
+    if (!row) {
+      toast("请选择工程版本和目标 BOM 行", true);
+      return;
+    }
+    Object.assign(item, {
+      analysis_mode: "engineering", product: version.product, plant: version.plant,
+      engineering_version: version.engineering_version, target_bom_row: row.row_id,
+      old_component: row.component, target_parent: row.parent,
+      planning_plant: version.plant,
+    });
+  }
   if (!item.ecn || !item.bom_version) {
     toast("请确认该变更项目的 ECN 参考号和核查版本", true);
     return;
@@ -550,6 +643,9 @@ function addDraftItem(event) {
   ].forEach((selector) => { $(selector).value = ""; });
   $("#planning-plant").value = "";
   $("#storage-location").value = "";
+  if (exact) {
+    $("#engineering-row").value = "";
+  }
   toast(`已加入本次变更：${item.ecn}`);
 }
 
@@ -586,7 +682,10 @@ function renderDraftItems() {
     title.textContent = `${labels[item.change_type]} · ${item.ecn}`;
     main.appendChild(title);
     const detail = document.createElement("span");
-    detail.textContent = `${target} · BOM ${item.bom_version} · ${item.effective_date}`;
+    const scope = item.analysis_mode === "engineering"
+      ? `${item.product} / ${item.plant || "未指定工厂"} / ${item.engineering_version} / ${item.target_bom_row}`
+      : target;
+    detail.textContent = `${scope} · ${item.bom_version} · ${item.effective_date}`;
     main.appendChild(detail);
     const remove = document.createElement("button");
     remove.type = "button";
@@ -693,6 +792,16 @@ function renderAnalysis(result) {
     ? `${result.bom_version} · 综合核查 · ${result.change_item_count} 项变更`
     : `${result.change.type_label} · ${result.ecn || result.analysis_id} · BOM ${result.bom_version || "—"}`;
   $("#result-summary").textContent = businessSummary(result);
+  const engineeringHost = $("#engineering-result");
+  engineeringHost.replaceChildren();
+  engineeringHost.classList.toggle("hidden", !result.engineering_impact);
+  $("#ordinary-analysis").classList.toggle("hidden", !!result.engineering_only);
+  $("#risk-badge").classList.toggle("hidden", !!result.engineering_only);
+  appendEvidenceSections(engineeringHost, result.engineering_impact?.sections);
+  if (result.engineering_only) {
+    appendProcurement(engineeringHost, result);
+    return;
+  }
   const risk = $("#risk-badge");
   risk.className = `risk-badge ${result.risk.level === "高" ? "high" : result.risk.level === "中" ? "medium" : "low"}`;
   risk.querySelector("strong").textContent = result.risk.level;
@@ -752,7 +861,11 @@ function renderAnalysis(result) {
 }
 
 function appendProcurement(host, result) {
-  (result.procurement_impact?.sections || []).forEach((section) => {
+  appendEvidenceSections(host, result.procurement_impact?.sections);
+}
+
+function appendEvidenceSections(host, sections = []) {
+  sections.forEach((section) => {
     const card = reportElement("div", "report-card");
     card.appendChild(reportElement("h4", "", section.title));
     section.lines.forEach((line) => card.appendChild(reportElement("p", "", line)));
@@ -1322,6 +1435,14 @@ function renderReport(report, result = state.result) {
     return;
   }
 
+  if (result.engineering_only) {
+    host.appendChild(reportElement("h2", "", "工程版本与订单引用核查报告"));
+    host.appendChild(reportElement("p", "report-lead", result.summary));
+    appendEvidenceSections(host, result.engineering_impact?.sections);
+    appendProcurement(host, result);
+    return;
+  }
+
   const cover = reportElement("header", "report-cover");
   const coverMain = reportElement("div");
   coverMain.append(
@@ -1447,6 +1568,7 @@ function renderReport(report, result = state.result) {
   }
 
   appendChangeChecks(riskSection, result);
+  appendEvidenceSections(riskSection, result.engineering_impact?.sections);
   appendProcurement(riskSection, result);
   const orderGrid = reportElement("div", "report-two-column report-orders");
   [
@@ -1656,6 +1778,13 @@ function setup() {
   $("#import-files").addEventListener("click", importFiles);
   $("#load-demo").addEventListener("click", loadDemo);
   $("#change-form").addEventListener("submit", addDraftItem);
+  $("#engineering-mode").addEventListener("change", updateEngineeringMode);
+  $("#engineering-version").addEventListener("change", () => {
+    $("#engineering-row").value = "";
+    updateEngineeringRows();
+    fillEngineeringRow();
+  });
+  $("#engineering-row").addEventListener("change", fillEngineeringRow);
   $("#analyze-draft").addEventListener("click", analyzeDraft);
   $$('input[name="change_type"]').forEach((input) => input.addEventListener("change", updateChangeFields));
   $("#old-component").addEventListener("input", () => scheduleOriginalEffectivityLookup());
