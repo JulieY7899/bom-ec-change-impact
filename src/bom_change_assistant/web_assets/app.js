@@ -188,11 +188,10 @@ async function refreshStatus() {
       const response = await fetch("/api/analysis/last");
       if (response.ok) {
         const latest = await response.json();
-        state.result = latest.result;
-        state.report = latest.report;
-        renderAnalysis(latest.result);
-        renderReport(latest.report, latest.result);
-        $("#report-download").href = `/api/report.md?analysis_id=${encodeURIComponent(latest.result.analysis_id)}`;
+        if (!state.result && state.status === data) {
+          state.batchItems = [latest];
+          selectBatchItem(0);
+        }
       }
     }
     await loadChangeLog();

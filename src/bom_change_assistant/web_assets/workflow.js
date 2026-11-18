@@ -178,8 +178,12 @@ function setupWorkflow() {
     const revision = draftRevision;
     runButton.disabled = true;
     try {
-      const data = await post("/api/workflow/run", { context, confirmation_token, confirmed: true });
+      const data = await post("/api/workflow/run", {
+        context, confirmation_token, confirmed: true, include_analysis: true,
+      });
       if (revision !== draftRevision) return;
+      state.batchItems = [data.analysis];
+      selectBatchItem(0);
       showResult(data);
       preflight.textContent = "核查已完成 · " + data.run_id;
     } catch (error) {
@@ -403,6 +407,9 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
   function transferRows() {
     if (!collection) return [];
     const rows = [...collection.rows];
+    if (collection.cleared.includes("new_component") && form.elements.new_component.value) {
+      rows.push({ field: "new_component", label: "新组件", display: "清空，待确认替代件" });
+    }
     const scopeChanges = ["product", "plant", "engineering_version"].some((field) =>
       collection.fields[field] && form.elements[field].value
       && collection.fields[field] !== form.elements[field].value);

@@ -528,7 +528,13 @@ class Handler(BaseHTTPRequestHandler):
             defaults = self.state.repository.draft_defaults()
             draft = {**context["draft"], "bom_version": defaults["default_bom_version"]}
             item = self.state.analysis.analyze_changes([draft])["items"][0]
-            return workflow.finish(self.state.repository, context, item)
+            output = workflow.finish(self.state.repository, context, item)
+            if payload.get("include_analysis") is True:
+                output["analysis"] = {
+                    "result": {**item["result"], "engineering_knowledge_available": context["role"] == "engineering"},
+                    "report": item["report"],
+                }
+            return output
         if path in {"/api/engineering-knowledge/preview", "/api/engineering-knowledge/index"}:
             self._engineering_knowledge_context(route)
             if path.endswith("/preview"):
