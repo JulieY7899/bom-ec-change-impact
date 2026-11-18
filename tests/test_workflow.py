@@ -133,6 +133,68 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.request(self.knowledge_url(run_id), method="GET")["excerpts"], 0)
         return self.request(self.knowledge_url(run_id, "/index"), {**reviewed, "approved": True})
 
+    def test_sales_intake_custom_reference_reuses_the_evidence_workflow(self):
+        self.import_bom(engineering=True)
+        messages = ["销售订单 SO-22 的成品 BOM 改了，能下单吗？",
+                    "成品 FG-T1 是客户定制 BOM", "订单行引用工程版本 ENG-V2，工厂 PLANT-T，BOM 行 V2-L2",
+                    "2026-12-01 把 PART-OLD 换成 PART-NEW"]
+        answer = self.request("/api/workflow/dialogue", {"messages": messages})
+        self.assertEqual(answer["intake"]["status"], "impact_review")
+        self.assertFalse(answer["missing"])
+        draft = dict(answer["fields"])
+        role = draft.pop("role")
+        prepared = self.request("/api/workflow/preflight", {"role": role, "draft": draft})
+        self.assertTrue(prepared["ready"], prepared)
+        run = self.run_review(prepared)
+        self.assertEqual(run["answer"]["role"], "销售")
+        self.assertEqual(run["context"]["draft"]["engineering_version"], "ENG-V2")
+        self.assertIn("SO-22", run["report"])
+        self.assertNotIn(messages[0], run["report"])
+
+    def test_added_departments_can_run_the_existing_workflow(self):
+        self.import_bom()
+        for label in ("计划部", "仓储部", "质量部", "售后部"):
+            message = f"{label}，2026-12-01 把 PART-OLD 换成 PART-NEW"
+            with self.subTest(label=label):
+                answer = self.request("/api/workflow/dialogue", {"messages": [message]})
+                self.assertFalse(answer["missing"], answer)
+                draft = dict(answer["fields"])
+                role = draft.pop("role")
+                prepared = self.request("/api/workflow/preflight", {
+                    "role": role, "draft": draft, "focus": answer["focus"],
+                })
+                self.assertTrue(prepared["ready"], prepared)
+                result = self.run_review(prepared)
+                self.assertEqual(result["answer"]["role"], label.removesuffix("部"))
+                self.assertTrue(result["answer"]["review_actions"])
+                self.assertIn("PART-NEW", result["report"])
+
+    def test_authenticated_dialogue_uses_granted_role_and_ignores_claimed_department(self):
+        self.import_bom()
+        cases = (
+            ("planning", "什么时候齐套", "齐套与切换"),
+            ("warehouse", "批次 LOT-1 待检", "库存状态与可用量"),
+            ("quality", "新料验证待验证", "新料验证与适用性"),
+            ("service", "已交付设备 SN-1 的维修备件", "已交付产品与备件"),
+        )
+        self.login_as("other", tuple(role for role, _, _ in cases))
+        for role, message, topic in cases:
+            with self.subTest(role=role):
+                self.switch(role)
+                answer = self.request("/api/workflow/dialogue", {"messages": [message]})
+                self.assertEqual(answer["department_intent"]["role"], role)
+                self.assertIn(topic, answer["department_intent"]["topics"])
+                answer = self.request("/api/workflow/dialogue", {
+                    "messages": ["我是工程，2026-12-01 把 PART-OLD 换成 PART-NEW"],
+                })
+                self.assertEqual(answer["fields"]["role"], role)
+                self.assertIn("按当前账号", answer["reply"])
+                draft = {key: value for key, value in answer["fields"].items() if key != "role"}
+                prepared = self.request("/api/workflow/preflight", {"draft": draft, "focus": answer["focus"]})
+                self.assertTrue(prepared["ready"], prepared)
+                self.assertEqual(self.run_review(prepared)["context"]["role"], role)
+        self.request("/api/account/role", {"role": "engineering"}, status=403)
+
     def test_confirmed_workflow_selects_the_same_analysis_for_views_and_reload(self):
         self.login_as("engineering", ("engineering", "procurement"))
         self.import_bom()

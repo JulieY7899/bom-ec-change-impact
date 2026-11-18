@@ -455,6 +455,8 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
   const messages = [];
   let collection = null;
   let focus = [];
+  let dialogueRole = state.account?.identity?.active_role;
+  const currentRole = () => state.account?.identity?.active_role;
 
   function append(text, author) {
     const row = element("div", "");
@@ -465,7 +467,8 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
   }
 
   function transferRows() {
-    if (!collection) return [];
+    if (!collection || (collection.intake && collection.intake.status !== "impact_review")
+        || collection.department_intent?.status === "evidence_review") return [];
     const rows = [...collection.rows];
     const clearable = {
       role: "业务角色",
@@ -494,6 +497,15 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
   }
 
   function renderTransfer() {
+    const intent = collection?.department_intent;
+    $("#workflow-department").classList.toggle("hidden", !intent || intent.status === "outside_scope");
+    if (intent) {
+      $("#workflow-department-topics").textContent = intent.topics.join("、");
+      $("#workflow-department-scope").replaceChildren(...intent.rows.flatMap(({ label, value }) =>
+        [element("dt", label), element("dd", Array.isArray(value) ? value.join("、") : value)]));
+      $("#workflow-department-evidence").replaceChildren(...intent.evidence.map(value => element("li", value)));
+      $("#workflow-department-owner").textContent = intent.decision_owner;
+    }
     const rows = transferRows();
     transfer.classList.toggle("hidden", !rows.length);
     list.replaceChildren();
@@ -509,7 +521,7 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
   composer.addEventListener("submit", async (event) => {
     event.preventDefault();
     const text = message.value.trim();
-    if (!text || send.disabled) return;
+    if (!text || send.disabled || state.accountChanging) return;
     if (messages.length >= 30) {
       status.textContent = "这一轮对话已满 30 条，可以先填入核查表，或开始新对话。";
       return;
@@ -518,8 +530,10 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
     reset.disabled = true;
     apply.disabled = true;
     status.textContent = "正在整理这条消息…";
+    const submittedRole = dialogueRole = currentRole();
     try {
       const next = await post("/api/workflow/dialogue", { messages: [...messages, text] });
+      if (submittedRole !== currentRole()) return;
       messages.push(text);
       append(text, "你");
       append(next.reply, "核查助手");
@@ -528,7 +542,15 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
       applied.textContent = "";
       status.textContent = "";
       renderTransfer();
-      if (next.rows.length || next.cleared.length) invalidateDraft("对话已更新，请核对待填字段。");
+      if (next.intake && next.intake.status !== "impact_review") {
+        invalidateDraft(next.intake.status === "outside_scope"
+          ? "这项订单决定请按销售流程核实。"
+          : "订单问题待澄清。请按对话提示补充资料。");
+      } else if (next.department_intent?.status === "evidence_review") {
+        invalidateDraft("请先核对对话中列出的证据和范围。");
+      } else if (next.rows.length || next.cleared.length) {
+        invalidateDraft("对话已更新，请核对待填字段。");
+      }
     } catch (error) {
       status.textContent = error.message;
     } finally {
@@ -548,7 +570,7 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
 
   apply.addEventListener("click", () => {
     const rows = transferRows();
-    if (!rows.length) return;
+    if (!rows.length || state.accountChanging || dialogueRole !== currentRole()) return;
     for (const { field } of rows) form.elements[field].value = collection.fields[field] ?? "";
     focus = collection.focus;
     invalidateDraft("对话字段已填入，核对后请预检。");
@@ -558,16 +580,27 @@ function setupWorkflowDialogue(form, post, element, invalidateDraft) {
     renderTransfer();
   });
 
-  reset.addEventListener("click", () => {
+  function resetDialogue() {
+    dialogueRole = currentRole();
     messages.length = 0;
     collection = null;
     log.replaceChildren();
     append(greeting, "核查助手");
     reset.disabled = true;
-    status.textContent = "已开始新对话，核查表中的内容可继续编辑。";
     applied.textContent = "";
     renderTransfer();
+  }
+
+  reset.addEventListener("click", () => {
+    resetDialogue();
+    status.textContent = "已开始新对话，核查表中的内容可继续编辑。";
     message.focus();
+  });
+  document.addEventListener("bom-role-changed", () => {
+    if (dialogueRole === currentRole()) return;
+    resetDialogue();
+    focus = [];
+    status.textContent = "已按当前角色开始新对话，核查表中的内容可继续编辑。";
   });
   form.addEventListener("input", renderTransfer);
   return () => focus;

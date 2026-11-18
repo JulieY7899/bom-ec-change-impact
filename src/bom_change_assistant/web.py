@@ -568,7 +568,9 @@ class Handler(BaseHTTPRequestHandler):
             token = self.state.accounts.switch_role(self._session_token(), identity, role)
             return {"token": token, "identity": {**identity, "active_role": role}}
         if path == "/api/workflow/dialogue":
-            return workflow_dialogue.collect(payload.get("messages"))
+            identity = self._identity()
+            return workflow_dialogue.collect(payload.get("messages"),
+                                             active_role=identity["active_role"] if identity else None)
         if path == "/api/workflow/preflight":
             self.state.require_no_import()
             identity = self._workflow_identity()
