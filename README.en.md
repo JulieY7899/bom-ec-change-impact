@@ -106,6 +106,11 @@ Coverage includes procurement reconciliation, multilevel traversal, order associ
 
 **Earlier snapshots require reimport.** They contain the classified status only. To correct PCNF misclassification, reimport the complete batch from the original Excel exports, then rerun the analysis and generate a new report.
 
+### PCNF reimport verification
+
+- **Anonymized sample.** All four production orders containing `PCNF` also carried `DLV`, and each delivered quantity equaled the order quantity. On reimport, all four were classified as completed and excluded from the in-progress count.
+- **Controlled comparison.** Two test orders were added within the same BOM review scope, one with `PCNF` alone and one with `REL PCNF` alone. Both were classified as released/in progress, including the order with a blank quantity. The linked production order count and the in-progress count in the risk rationale both rose from 0 to 2. The web results agreed with both Markdown downloads.
+
 ## Data handling and limitations
 
 - External model calls are blocked, including when `OPENAI_API_KEY` is present. The server is restricted to loopback addresses and checks Host and Origin headers.
