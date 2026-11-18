@@ -17,8 +17,8 @@ FIELD_HINTS = {
     "plant": r"(?:工程版本)?工厂(?:代码)?",
     "engineering_version": r"(?:工程版本|EBOM\s*版本|版本号|版本)",
     "target_bom_row": r"(?:目标\s*)?(?:BOM\s*行(?:号)?|行号)",
-    "old_component": r"(?:原|旧)(?:组件|物料|料号)",
-    "new_component": r"新(?:组件|物料|料号)",
+    "old_component": r"(?:(?:原|旧)(?:组件|物料|料号|件)|原来用的)",
+    "new_component": r"(?:新(?:组件|物料|料号|件)|替代(?:采购件|件|料号))",
     "target_parent": r"(?:目标\s*)?父件(?:号|物料)?",
     "planning_plant": r"采购工厂(?:代码)?",
     "storage_location": r"(?:采购)?库位(?:代码)?",
@@ -64,15 +64,55 @@ def _iso(match):
         return None
 
 
+def _material_edits(message):
+    """Keep a change to a named field out of the BOM replacement parser."""
+    edits = {}
+    for field in ("old_component", "new_component"):
+        label = FIELD_HINTS[field]
+        part = workflow.ID_WORD
+        edit = (rf"{label}\s*(?:(?:从|由)\s*{part}\s*(?:改为|改成|换成)|"
+                rf"(?:不是\s*{part}|(?:我)?(?:说错|报错|写错|填错)了?)\s*[,，、]?\s*(?:应该是|应为|而是|是))"
+                rf"\s*({part})")
+
+        def take_value(match):
+            edits[field] = match[1]
+            return " "
+
+        message = re.sub(edit, take_value, message)
+    return message, edits
+
+
 def _new_details(message, draft, expected):
-    details = {key: value for key, value in workflow._suggest(message).items()
+    proposal, edits = _material_edits(message)
+    details = {key: value for key, value in workflow._suggest(proposal).items()
                if key in ("change_type", "old_component", "new_component")}
     dates = list(re.finditer(DATE, message))
-    if len(dates) == 1 and (parsed := _iso(dates[0])):
+    effective_dates = []
+    for match in dates:
+        before = message[:match.start()]
+        after = message[match.end():]
+        if (re.search(r"(?:生效(?:日(?:期)?)?|切换日)\s*(?:改为|改成|定在|为|是|[:=])?\s*$", before)
+                or re.match(r"\s*(?:起)?生效", after)):
+            effective_dates.append(match)
+    if len(effective_dates) == 1:
+        chosen = effective_dates[0]
+    elif len(dates) == 1:
+        match = dates[0]
+        before = re.split(r"[,，;；。\n]", message[:match.start()])[-1]
+        after = re.split(r"[,，;；。\n]", message[match.end():])[0]
+        supply_date = (re.search(r"(?:到货|交货|交期|采购日期)(?:日(?:期)?)?\s*(?:为|是|在|[:=])?\s*$", before)
+                       or re.match(r"\s*(?:前|当天|仍|也|才(?:能)?|预计|无法|不能|没法|未能|不能及时)*"
+                                   r"(?:到货|交货|到不了|交不了)", after))
+        chosen = None if supply_date else match
+    else:
+        chosen = None
+    if chosen and (parsed := _iso(chosen)):
         details["effective_date"] = parsed
     role = re.search(rf"(?:从|我是|改为|切换到|角色\s*[:=]?\s*)({ROLE})(?:\s*(?:角度|视角)|(?=[，,。 ]|$))", message)
     if role:
         details["role"] = workflow.ROLE_LABELS[role[1]]
+    elif prefix := re.match(rf"^(?:我们)?({ROLE})(?:这边|部门|\s*[:：])", message):
+        details["role"] = workflow.ROLE_LABELS[prefix[1]]
     elif message in workflow.ROLE_LABELS:
         details["role"] = workflow.ROLE_LABELS[message]
     elif "role" not in draft:
@@ -80,10 +120,13 @@ def _new_details(message, draft, expected):
         if inferred:
             details["role"] = inferred
     phrases = [kind for kind, pattern in ACTION_WORDS.items()
-               if re.fullmatch(pattern, message) or re.search(rf"(?:想|计划|打算|拟)\s*(?:{pattern})", message)]
+               if re.fullmatch(pattern, message) or re.search(rf"(?:想|计划|打算|拟|(?<!不)要)\s*(?:{pattern})", message)]
     if not details.get("change_type") and len(phrases) == 1:
         details["change_type"] = phrases[0]
+    replacement_unresolved = details.get("new_component") == ""
     for field, label in FIELD_HINTS.items():
+        if field == "new_component" and replacement_unresolved:
+            continue
         # Keep a purchase plant out of the EBOM scope.
         prefix = r"(?<!采购)" if field == "plant" else ""
         found = re.findall(
@@ -92,6 +135,14 @@ def _new_details(message, draft, expected):
         )
         if len(found) == 1:
             details[field] = found[0]
+    details.update(edits)
+    if expected == "new_component" and not details.get("new_component"):
+        chosen_part = re.fullmatch(rf"(?:最终|确定|确认)(?:选用|用|选)\s*({workflow.ID_WORD})", message)
+        if chosen_part:
+            details["new_component"] = chosen_part[1]
+    if not details.get("change_type") and details.get("old_component") and details.get("new_component"):
+        if re.search(r"替换|替代|更换|换料", message):
+            details["change_type"] = "replace"
     if details.get("effective_date") and not re.search(r"生效", message) and any(
         details.get(field) == details["effective_date"] for field in FIELD_HINTS
     ):
@@ -180,7 +231,13 @@ def collect(messages):
         ):
             draft.pop("target_bom_row", None)
             cleared.add("target_bom_row")
-        draft.update(last)
+        cleared.difference_update(last)
+        for field, value in last.items():
+            if value == "":
+                draft.pop(field, None)
+                cleared.add(field)
+            else:
+                draft[field] = value
         if draft.get("change_type"):
             for field, changes in CHANGE_FIELDS.items():
                 if draft["change_type"] not in changes:
@@ -188,7 +245,6 @@ def collect(messages):
         if draft.get("analysis_mode") == "material":
             for field in (*SCOPE_FIELDS, "target_bom_row"):
                 draft.pop(field, None)
-        cleared.difference_update(last)
         missing = _missing(draft)
     rows = []
     for field, label in workflow.LABELS.items():
@@ -196,7 +252,9 @@ def collect(messages):
             value = draft[field]
             display = workflow.ROLES[value][0] if field == "role" else workflow._display_field(field, value)
             rows.append({"field": field, "label": label, "display": display})
-    understood = "已记录这一轮的信息。" if last else "这句没有识别到可填写的字段，可以换个说法。"
+    recognized = [str(row["display"]) if row["field"] in ("role", "change_type")
+                  else f'{row["label"]} {row["display"]}' for row in rows if row["field"] in last]
+    understood = "已识别" + "、".join(recognized) + "。" if recognized else "可以补充或更正已整理的字段。"
     question = PROMPTS.get(missing[0], "请核对已整理的字段。确认后可一键填入核查表。") if missing else (
         "必填项已整理好。核对后可一键填入核查表，再做数据预检。"
     )

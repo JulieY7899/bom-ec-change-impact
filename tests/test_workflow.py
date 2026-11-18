@@ -113,6 +113,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.request(self.knowledge_url(run_id), method="GET")["excerpts"], 0)
         return self.request(self.knowledge_url(run_id, "/index"), {**reviewed, "approved": True})
 
+    def test_confirmed_workflow_selects_the_same_analysis_for_views_and_reload(self):
+        self.import_bom()
+        for role, new_part in (("engineering", "PART-NEW"), ("procurement", "PART-FINAL")):
+            prepared = self.preflight(role=role, draft={"new_component": new_part})
+            run = self.request("/api/workflow/run", {
+                "context": prepared["context"], "confirmation_token": prepared["confirmation_token"],
+                "confirmed": True, "include_analysis": True,
+            })
+            selected = run["analysis"]
+            self.assertEqual(selected["result"]["change"]["new_component"], new_part)
+            self.assertEqual(selected["result"]["analysis_id"], run["run_id"])
+            self.assertEqual(selected["result"]["engineering_knowledge_available"], role == "engineering")
+            for endpoint in ("/api/analysis/last", "/api/analysis/by-id?analysis_id=" + run["run_id"]):
+                self.assertEqual(self.request(endpoint, method="GET"), {"ok": True, **selected})
+            self.assertEqual(self.request("/api/report.md", method="GET"), selected["report"])
+            self.assertNotIn("analysis", self.request("/api/workflow/run", method="GET"))
+
     def test_knowledge_is_separate_from_standard_workflow_and_download(self):
         self.import_bom()
         before = self.preflight()
@@ -302,6 +319,78 @@ class WorkflowTests(unittest.TestCase):
         ]})
         self.assertEqual(ambiguous["missing"], ["new_component"])
         self.assertNotIn("new_component", ambiguous["fields"])
+
+    def test_delayed_delivery_with_replacement_across_clauses_and_turns(self):
+        screenshot = "我是采购，COMP-001今天到不了货，换成COMP-998会有什么影响"
+        target = {"role": "procurement", "change_type": "replace",
+                  "old_component": "COMP-001", "new_component": "COMP-998"}
+        for messages in (
+            [screenshot],
+            ["我是采购，COMP-001今天到不了货", "换成COMP-998会有什么影响"],
+            ["我是采购，COMP-001买不到，想用COMP-998代替"],
+            ["采购：COMP-001目前缺货，准备换成物料COMP-998"],
+        ):
+            with self.subTest(messages=messages):
+                partial = self.request("/api/workflow/dialogue", {"messages": messages})
+                self.assertEqual(partial["fields"], target)
+                self.assertEqual(partial["missing"], ["effective_date"])
+                for tail in (["2026/12/1"], ["替换", "2026/12/1"]):
+                    finished = self.request("/api/workflow/dialogue", {"messages": [*messages, *tail]})
+                    self.assertEqual(finished["fields"], {**target, "effective_date": "2026-12-01"})
+                    self.assertEqual(finished["missing"], [])
+        ready = self.request("/api/workflow/dialogue", {"messages": [screenshot + "，拟于2026/12/1生效"]})
+        self.assertEqual(ready["missing"], [])
+
+    def test_receipt_date_and_engineering_field_corrections_do_not_change_the_replacement(self):
+        message = "我是采购，COMP-001今天到不了货，换成COMP-998，交期是2026/11/29"
+        partial = self.request("/api/workflow/dialogue", {"messages": [message]})
+        self.assertEqual(partial["missing"], ["effective_date"])
+        self.assertNotIn("effective_date", partial["fields"])
+        prep = self.request("/api/workflow/dialogue", {"messages": [
+            message + "，2026/12/1生效", "生效日改成2026年12月2日",
+        ]})
+        self.assertEqual(prep["fields"]["new_component"], "COMP-998")
+        self.assertEqual(prep["fields"]["effective_date"], "2026-12-02")
+        shortage = self.request("/api/workflow/dialogue", {"messages": ["我是采购，COMP-001今天到不了货"]})
+        self.assertEqual(shortage["fields"], {"role": "procurement", "old_component": "COMP-001"})
+
+    def test_spoken_procurement_uses_supply_date_only_as_arrival_evidence(self):
+        terms = "我们采购这边，供方说 MAT-704 要到2026/12/9才能到货，想改采 MAT-806"
+        expected = dict(role="procurement", change_type="replace", old_component="MAT-704", new_component="MAT-806")
+        for messages in ([terms], [terms, "拟生效日为2026/12/1"]):
+            answer = self.request("/api/workflow/dialogue", {"messages": messages})
+            if len(messages) == 1:
+                self.assertEqual(answer["fields"], expected)
+                self.assertEqual(answer["missing"], ["effective_date"])
+            else:
+                self.assertEqual(answer["fields"], {**expected, "effective_date": "2026-12-01"})
+                self.assertEqual(answer["missing"], [])
+
+    def test_procurement_corrections_update_only_the_named_component(self):
+        messages = ["我是采购，采购工厂 S001，库位 0008，COMP-001 换成 COMP-998，2026/12/1生效。"]
+        expected = dict(role="procurement", change_type="replace", effective_date="2026-12-01",
+                        planning_plant="S001", storage_location="0008", old_component="COMP-001", new_component="COMP-998")
+        for message, field, value in (
+            ("刚才替代件说错了，应该是 COMP-997。", "new_component", "COMP-997"),
+            ("原料号不是 COMP-001，是 COMP-011。", "old_component", "COMP-011"),
+            ("原组件改成 COMP-012。", "old_component", "COMP-012"),
+            ("新料号从 COMP-997 改成 COMP-996。", "new_component", "COMP-996"),
+            ("原料号由 COMP-012 改为 COMP-013。", "old_component", "COMP-013"),
+            ("替代件重新选，改用 ALT-11 或 ALT-12，还没定。", "new_component", None),
+            ("最终用 ALT-12。", "new_component", "ALT-12"),
+        ):
+            with self.subTest(message=message):
+                messages.append(message)
+                result = self.request("/api/workflow/dialogue", {"messages": messages})
+                if value is None:
+                    del expected[field]
+                    self.assertIn(field, result["cleared"])
+                    self.assertEqual(result["missing"], [field])
+                else:
+                    expected[field] = value
+                    self.assertNotIn(field, result["cleared"])
+                    self.assertFalse(result["missing"])
+                self.assertEqual(result["fields"], expected)
 
     def test_data_preparation_uses_the_same_parameters_before_and_after_import(self):
         before = self.preflight()

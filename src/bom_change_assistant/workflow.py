@@ -60,32 +60,54 @@ SCOPE_HINTS = {
 
 
 def _replacement(question):
-    # Explicit direction: old changes to new, or use new to replace old.
     part = rf"(?<![A-Za-z0-9_./-])({ID_WORD})(?![A-Za-z0-9_./-])"
-    pairings = (
-        (rf"{part}\s*(?:替换为|替换成|换成|改用)\s*{part}", 1, 2),
-        (rf"用\s*{part}\s*(?:替代|替换)\s*{part}", 2, 1),
-        (rf"{part}\s*(?:暂时)?(?:无法|不能|来不及|没法)(?:及时)?(?:采购|到货|供应)", 1, 0),
-        (rf"{part}\s*(?:到货晚|缺货|短缺|缺料|采购来不及)", 1, 0),
-        (rf"(?<!用)(?:替代(?:采购件|物料|料号|件|料)|替换件|备选料号|改用)\s*(?:是|为|用|[:=])?\s*{part}", 0, 1),
-    )
+    when = r"(?:已经|今天|明天|后天|本周|这周|目前|暂时|现在|这批|20\d{2}[-年/]\d{1,2}[-月/]\d{1,2}日?)?"
+    shortage = (r"(?:到不了货?|到不(?:了|齐)|到货晚|到货延期|没(?:有)?到货|不能到货|交不了货|"
+                r"停供|缺货|断货|缺料|短缺|买不到|采购不到|采购来不及|"
+                r"(?:要到|要等到|得等到)\s*20\d{2}[-年/]\d{1,2}[-月/]\d{1,2}日?\s*才(?:能)?(?:到货|交货)|"
+                r"(?:无法|不能|来不及|没法)(?:按时|及时|按期)?(?:采购|到货|供应|交货))")
+    material_label = r"(?:(?:原|新|旧)?(?:物料|组件|料号|采购件)\s*)?"
+    forward = r"(?:替换为|替换成|更换为|更换成|替代为|换为|换成|改用|改成|改采|改订)"
+    substitute = r"(?:替代|代替|替换|取代)"
+    label = r"(?:替代(?:采购件|物料|料号|件|料)|替换件|备选料号)"
     old_parts, new_parts = set(), set()
-    ambiguous = False
-    for pattern, old_index, new_index in pairings:
+    ambiguous_target = False
+    for match in re.finditer(rf"{part}\s*{when}\s*{shortage}", question):
+        old_parts.add(match[1].upper())
+
+    # Bind the complement to the change verb even when the subject was mentioned
+    # in a preceding supply clause or an earlier turn.
+    patterns = (
+        (rf"{part}\s*{forward}\s*{material_label}{part}", 1, 2),
+        (rf"(?:用|采用|选用)\s*{part}\s*(?:来)?{substitute}\s*{part}", 2, 1),
+        (rf"(?:用|采用|选用)\s*{part}\s*(?:来)?{substitute}(?!\s*{ID_WORD})", 0, 1),
+        (rf"(?:{forward}|{label}\s*(?:是|为|用|[:=])?)\s*{material_label}{part}", 0, 1),
+    )
+    for pattern, old_index, new_index in patterns:
         for match in re.finditer(pattern, question):
-            if old_index and not re.fullmatch(r"20\d{2}-\d{1,2}-\d{1,2}", match[old_index]):
-                old_parts.add(match[old_index].upper())
-            if new_index:
-                tail = question[match.end(new_index):]
-                ambiguous |= bool(re.match(rf"\s*(?:或(?:者)?|、|/|还是)\s*{ID_WORD}", tail))
-                new_parts.add(match[new_index].upper())
-    if not new_parts:
-        return {}
-    return {
-        "change_type": "replace",
-        **({"old_component": next(iter(old_parts))} if len(old_parts) == 1 else {}),
-        **({"new_component": next(iter(new_parts))} if len(new_parts) == 1 and not ambiguous else {}),
-    }
+            prefix = question[:match.start()].rstrip()
+            if re.search(r"(?:不|不要|不能|不想|不打算|无需|不考虑)$", prefix):
+                continue
+            # Field corrections like “拟生效日改成 …” must retain their own meaning.
+            if not old_index and re.search(r"(?:(?:原|旧|新)(?:组件|物料|料号|件)|日期|生效日|生效|工厂|库位|用量|版本号?|行号|角色|成品)$", prefix):
+                continue
+            if old_index:
+                old = match[old_index]
+                if not re.fullmatch(r"20\d{2}-\d{1,2}-\d{1,2}", old):
+                    old_parts.add(old.upper())
+            new_parts.add(match[new_index].upper())
+            tail = question[match.end(new_index):]
+            if re.match(rf"\s*(?:或(?:者)?|、|还是)\s*{ID_WORD}", tail):
+                ambiguous_target = True
+
+    draft = {}
+    if len(old_parts) == 1:
+        draft["old_component"] = next(iter(old_parts))
+    if new_parts:
+        draft["change_type"] = "replace"
+        # An unresolved choice withdraws any previously proposed replacement.
+        draft["new_component"] = next(iter(new_parts)) if len(new_parts) == 1 and not ambiguous_target else ""
+    return draft
 
 
 def _suggest(question):
@@ -101,7 +123,7 @@ def _suggest(question):
     remove = re.search(rf"(?:删除|移除)\s*({ID_WORD})", question)
     if replace:
         draft.update(replace)
-    elif remove:
+    if remove and "change_type" not in draft:
         draft.update(change_type="remove", old_component=remove[1])
     for field, label in SCOPE_HINTS.items():
         candidates = re.findall(rf"{label}\s*[:=]?\s*({ID_WORD})", question, re.IGNORECASE)
@@ -456,6 +478,8 @@ def finish(repository, context, item):
     with repository.connect() as connection:
         connection.execute("INSERT INTO workflow_runs VALUES (?, ?, ?)",
                            (output["run_id"], json.dumps(output, ensure_ascii=False), report))
+        # A workflow confirms one change. Restore that same report on page reload.
+        connection.execute("UPDATE meta SET value=? WHERE key='last_analysis_id'", (output["run_id"],))
     return {**output, "report": report}
 
 
