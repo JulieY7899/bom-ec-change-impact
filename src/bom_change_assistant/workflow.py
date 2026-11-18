@@ -7,7 +7,7 @@ import re
 import unicodedata
 from datetime import date
 
-from . import engineering, knowledge, knowledge_store, procurement
+from . import department_intent, engineering, knowledge, knowledge_store, procurement
 from .normalization import coerce_date, coerce_number
 
 CONTRACT = "bom-workflow-v1"
@@ -24,6 +24,10 @@ ROLES = {
     "sales": ("销售", "销售订单 订单行 需求日期 交期 配置 项目 版本引用"),
     "manufacturing": ("制造", "制造 生产工单 工单 领料 投料 报工 生产状态 完工"),
     "engineering": ("工程", "工程版本 EBOM BOM行 生效 替换 路径 版本引用 变更"),
+    "planning": ("计划", "库存 齐套 切换需求 在途"),
+    "warehouse": ("仓储", "库位 批次 待检 隔离"),
+    "quality": ("质量", "验证 复验 放行 质量风险"),
+    "service": ("售后", "备件 维修 存量设备"),
 }
 KEYWORDS = {
     "rd": ("研发", "设计", "用在哪里", "父件", "互换"),
@@ -31,9 +35,15 @@ KEYWORDS = {
     "sales": ("销售", "交期", "交货", "客户需求", "订单行"),
     "manufacturing": ("制造", "生产", "工单", "领料", "投料", "报工"),
     "engineering": ("工程", "ebom", "版本引用", "生效", "bom 行", "bom行"),
+    "planning": ("物料计划", "物控", "齐套"),
+    "warehouse": ("仓储", "仓库", "物流"),
+    "quality": ("质检", "复验", "质量风险"),
+    "service": ("售后", "维修备件", "存量设备"),
 }
 FOCUSES = ("采购承诺", "到货", "退货", "冲销", "供应来源", "交期", "配置",
            "投料", "领料", "工单", "报工", "版本引用", "BOM 行", "用量", "生效", "替换")
+FOCUSES += tuple(dict.fromkeys(topic for topics in department_intent.TOPICS.values()
+                              for topic, _, _ in topics))
 LABELS = {
     "role": "业务角色", "analysis_mode": "核查范围", "change_type": "变更类型", "old_component": "原组件",
     "new_component": "新组件", "target_parent": "目标父件",
@@ -153,8 +163,13 @@ def _suggest(question):
     return draft
 
 
-ROLE_ALIASES = {**ROLE_LABELS, "生产": "manufacturing", "生产现场": "manufacturing",
-                "制造工程": "engineering", "ME": "engineering"}
+ROLE_ALIASES = {
+    **ROLE_LABELS, "生产": "manufacturing", "生产现场": "manufacturing",
+    "制造工程": "manufacturing", "ME": "manufacturing", "工程研发": "engineering",
+    "物料计划": "planning", "物料管理": "planning", "物料": "planning", "物控": "planning",
+    "仓库": "warehouse", "物流": "warehouse", "订单管理": "sales", "服务": "service",
+    "质检": "quality", "品保": "quality", "QA": "quality", "QC": "quality",
+}
 ROLE_PATTERN = "|".join(sorted(ROLE_ALIASES, key=len, reverse=True))
 
 
@@ -163,9 +178,14 @@ def explicit_role(question):
     for pattern in (
         rf"(?:从|切换到|改用|换个?|站在)\s*({ROLE_PATTERN})\s*(?:的?视角|的?角度|这边看|看)",
         rf"(?:我是|我这边是|我负责|角色\s*[:=]?)\s*({ROLE_PATTERN})(?=部门|这边|部|[,，。\s]|$)",
-        rf"^\s*(?:我们)?({ROLE_PATTERN})(?=角度|视角|看一下|来看|这边|部门|部[,，。\s]|\s*[,，:：]|$)",
+        rf"(?:^|[,，。;；])\s*(?:我们)?({ROLE_PATTERN})(?=\s*(?:角度|视角|看一下|来看|这边|部门|部[,，。\s]|[,，:：]|$))",
     ):
         candidates.update(ROLE_ALIASES[match[1]] for match in re.finditer(pattern, question))
+    # Manufacturing engineering also performs explicit engineering-version reviews.
+    if (candidates == {"manufacturing"} and re.match(r"^制造工程[,，:\s]", question)
+            and re.search(r"工程版本.*BOM\s*行", question, re.I)
+            and not re.search(r"工单|领料|在制|工序", question)):
+        return {"engineering"}
     return candidates
 
 
@@ -356,6 +376,12 @@ def _data_preparation(repository, context):
         count = snapshot[key]
         if not strict or count:
             add(key, label, "已导入，范围待核" if count else "需补资料", f'快照中有 {count} 条记录。')
+    if role == "planning":
+        add("planning_supply", "供需与采购行证据", "待核",
+            "按物料、工厂、库位核对可用库存、在途、未到货采购及切换需求。以采购订单行核实重叠。")
+    elif role in {"warehouse", "quality", "service"}:
+        for index, (label, _, evidence) in enumerate(department_intent.TOPICS[role]):
+            add(f"department_{index}", label, "需人工核对", evidence)
     return {"fields": fields, "sources": sources}
 
 
@@ -460,6 +486,9 @@ def _answer(role, result):
                 f'剩余承诺 {procurement.shown(entry["O"])} {entry["unit"] or "单位待核"} · '
                 f'到货 {entry["receipt_check"]["status"]} · {procurement.evidence_text(entry["evidence"])}'
             )
+    elif role == "planning":
+        planning = result.get("planning_impact", {})
+        lines = [f'备料切换建议 · {planning["recommendation"]}。'] if planning.get("recommendation") else ["需补充计划供需证据。"]
     elif check:
         lines = [
             check["path_issue"] or f'目标 BOM 行 {check["target"]["row_id"]} 的工程路径已定位。',
@@ -480,7 +509,9 @@ def _answer(role, result):
         "manufacturing": checklist.get("制造", []),
         "sales": ["回查订单行需求日期、配置及交付承诺，再由销售和计划复核。"],
         "procurement": ["对照采购行及收货凭证核对到货覆盖和剩余承诺。"],
-    }[role]
+    }.get(role, [])
+    if role in {"planning", "warehouse", "quality", "service"}:
+        actions.append(department_intent.OWNERS[role])
     return {
         "role": ROLES[role][0], "facts": lines, "review_actions": actions,
     }

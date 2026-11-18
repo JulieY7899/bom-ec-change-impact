@@ -4,8 +4,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import date
+from math import isfinite
 
-from . import workflow
+from . import department_intent, sales_intake, workflow
 
 MAX_TURNS = 30
 MAX_MESSAGE = 500
@@ -36,7 +37,7 @@ ACTION_WORDS = {
     "quantity": r"(?:修改|调整|变更)(?:用量|单耗)|(?:用量|单耗)(?:从|改)",
     "effectivity": r"(?:修改|改变|调整|变更)生效(?:日期|日)?",
 }
-ROLE_PROMPT = "这次从哪个视角核查？可以回复研发、采购、销售、制造或工程。"
+ROLE_PROMPT = "这次从哪个视角核查？可以回复工程、研发、采购、计划、仓储、制造、质量、销售或售后。"
 ACTION_PROMPT = "你打算替换、删除、新增组件，还是调整用量或生效日期？"
 PROMPTS = {
     "role": ROLE_PROMPT,
@@ -157,6 +158,11 @@ def _new_details(message, draft, expected):
             rf"{prefix}{label}\s*(?:改为|改成|改用|换成|设为|用|是|为|[:=])?\s*{workflow.PART}",
             message, re.IGNORECASE,
         ))
+        if field == "engineering_version":
+            # A revision of the order BOM is not necessarily its referenced EBOM.
+            found = [match for match in found if not re.search(
+                r"(?:订单|定制)\s*BOM\s*$", message[:match.start()], re.I
+            )]
         if field == "product":
             # “成品 A 的组件 B” describes usage. Dedicated scope fields still require a mode.
             found = [match for match in found if not re.match(
@@ -164,6 +170,8 @@ def _new_details(message, draft, expected):
             )]
         if len(found) == 1:
             match = found[0]
+            if field == "product" and match[1].upper() in sales_intake.GENERIC:
+                continue
             ambiguous = field in {"old_component", "new_component"} and re.match(
                 rf"{workflow.MATERIAL_SUFFIX}{workflow.ALTERNATIVE}{workflow.PART}(?!\s*行)", message[match.end():]
             )
@@ -203,7 +211,7 @@ def _new_details(message, draft, expected):
 
     for pattern, kind, field in (
         (rf"(?:删除|移除|去掉|取消使用)\s*{workflow.MATERIAL_LABEL}{part}", "remove", "old_component"),
-        (rf"{part}{suffix}\s*(?:下架|移出\s*BOM|从\s*BOM\s*删除)", "remove", "old_component"),
+        (rf"{part}{suffix}\s*(?:下架|移出\s*BOM|从\s*BOM\s*删除|(?:删除|移除)(?=\s*[,，;；。]|$))", "remove", "old_component"),
         (rf"{ADD}\s*{workflow.MATERIAL_LABEL}{part}", "add", "new_component"),
     ):
         match = re.search(pattern, proposal, re.I)
@@ -263,6 +271,10 @@ def _missing(draft):
     normalized = workflow._values(draft, issues)
     workflow._required(normalized, issues)
     missing = [item["field"] for item in issues if item["field"]]
+    if (draft.get("role") == "manufacturing" and draft.get("change_type") == "replace"
+            and draft.get("new_component") and "old_component" in missing):
+        missing.remove("old_component")
+        missing.insert(0, "old_component")
     if not draft.get("analysis_mode") and any(draft.get(field) for field in SCOPE_FIELDS):
         missing.insert(0, "analysis_mode")
     if not draft.get("role"):
@@ -270,16 +282,56 @@ def _missing(draft):
     return list(dict.fromkeys(missing))
 
 
-def collect(messages):
+def collect(messages, *, active_role=None):
     if not isinstance(messages, list) or not 0 < len(messages) <= MAX_TURNS:
         raise ValueError("请发送 1 到 30 条对话消息")
     if any(not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE for message in messages):
         raise ValueError("每条消息须包含 1 到 500 个字符")
-    draft, cleared, last = {}, set(), {}
+    draft = {"role": active_role} if active_role else {}
+    cleared, last, intake = set(), {}, {}
+    role_notice = ""
+    scope, department, normalized_messages = {}, None, []
     missing = _missing(draft)
     for raw in messages:
         message = unicodedata.normalize("NFKC", raw).strip().rstrip("。！？")
-        last = _new_details(message, draft, missing[0] if missing else None)
+        gate = sales_intake.pending(intake, draft) if intake else []
+        expected = (gate or missing or [None])[0]
+        last = _new_details(message, draft, expected)
+        if active_role and "role" in last:
+            if last.pop("role") != active_role:
+                role_notice = f"按当前账号的{workflow.ROLES[active_role][0]}视角整理。"
+        for field in ("old_quantity", "new_quantity"):
+            if isinstance(last.get(field), float) and not isfinite(last[field]):
+                last[field] = ""
+        normalized_messages.append(message)
+        context_field = department_intent.next_scope(department) if not gate else None
+        department_intent.update_scope(scope, message, context_field)
+        role = last.get("role", draft.get("role"))
+        if role in {"planning", "procurement"} and not (
+            (last.get("analysis_mode") or draft.get("analysis_mode")) == "engineering"
+            and not re.search(r"(?:采购|计划|收货)工厂", message)
+        ):
+            if "plant" in scope and ("plant" in last or context_field == "plant" or role == "planning"):
+                last["planning_plant"] = scope["plant"]
+                last.pop("plant", None)
+            if "storage_location" in scope:
+                last["storage_location"] = scope["storage_location"]
+        previous_scope = tuple(intake.get(key) for key in ("order_id", "product", "bom_kind"))
+        if not active_role or active_role == "sales":
+            sales_intake.update(intake, message, last.get("role") or draft.get("role"), expected)
+        if intake:
+            last["role"] = "sales"
+            order_id, product, bom_kind = (intake.get(key) for key in ("order_id", "product", "bom_kind"))
+            if any(old and old != new for old, new in zip(previous_scope, (order_id, product, bom_kind))):
+                for field in ("engineering_version", "target_bom_row"):
+                    last.setdefault(field, "")
+            if bom_kind == "custom":
+                last["analysis_mode"] = "engineering"
+                if product:
+                    last["product"] = product
+            elif bom_kind == "standard" and not (last.get("engineering_version") or last.get("target_bom_row")):
+                if previous_scope[2] == "custom" or (not draft.get("analysis_mode") and not last.get("analysis_mode")):
+                    last["analysis_mode"] = "material"
         if "target_bom_row" not in last and any(
             field in last and field in draft and last[field] != draft[field] for field in SCOPE_FIELDS
         ):
@@ -288,6 +340,7 @@ def collect(messages):
         cleared.difference_update(last)
         for field, value in last.items():
             if value == "":
+                scope.pop(field, None)
                 draft.pop(field, None)
                 cleared.add(field)
             else:
@@ -296,6 +349,7 @@ def collect(messages):
             for field, changes in CHANGE_FIELDS.items():
                 if draft["change_type"] not in changes:
                     if draft.pop(field, None) is not None:
+                        scope.pop(field, None)
                         cleared.add(field)
             if (draft["change_type"] != "add" and draft.get("analysis_mode") != "engineering"
                     and draft.pop("target_parent", None) is not None):
@@ -304,6 +358,7 @@ def collect(messages):
             for field in (*SCOPE_FIELDS, "target_bom_row"):
                 draft.pop(field, None)
         missing = _missing(draft)
+        department = department_intent.summarize(draft.get("role"), normalized_messages, scope, draft, intake)
     rows = []
     for field, label in workflow.LABELS.items():
         if field in draft:
@@ -317,5 +372,39 @@ def collect(messages):
         "必填项已整理好。核对后可一键填入核查表，再做数据预检。"
     )
     focus = [word for word in workflow.FOCUSES if any(word.casefold() in message.casefold() for message in messages)]
-    return {"fields": draft, "rows": rows, "cleared": sorted(cleared), "missing": missing,
-            "reply": f"{understood}{question}", "focus": focus}
+    result = {"fields": draft, "rows": rows, "cleared": sorted(cleared), "missing": missing,
+              "reply": f"{understood}{question}", "focus": focus}
+    if department:
+        result["department_intent"] = department
+        result["focus"].extend(topic for topic in department["topics"] if topic not in result["focus"])
+        if department["status"] == "evidence_review" and not intake:
+            next_field = department_intent.next_scope(department)
+            detail = f'请补充{department_intent.LABELS[next_field]}。' if next_field else "如需跑 BOM 影响核查，请补充相关工程变更。"
+            result.update(rows=[], reply="已整理" + "、".join(department["topics"]) + "的核查范围。"
+                          + detail + department["decision_owner"])
+            if next_field:
+                result["missing"] = [next_field]
+    if intake:
+        gate = sales_intake.pending(intake, draft)
+        if intake["bom_related"] is False:
+            status, reply = "outside_scope", sales_intake.OUTSIDE_REPLY
+        elif gate:
+            status = "needs_context"
+            prompt = sales_intake.PROMPTS[gate[0]]
+            if gate[0] == "bom_kind" and intake.get("bom_kind") == "unknown":
+                prompt = "请先核对销售订单行的产品配置或订单 BOM，确认采用标准 BOM 还是客户定制 BOM。"
+            reply = sales_intake.ORDER_REPLY + prompt
+        else:
+            status = "impact_review"
+            scope = ("按订单行引用的版本和目标 BOM 行核查。"
+                     if intake["bom_kind"] == "custom" else
+                     "可核查通用 BOM 的变更影响，结果中的关联订单需逐行核对。")
+            reply = sales_intake.ORDER_REPLY + scope + question
+        result["intake"] = {**intake, "status": status}
+        result["reply"] = reply
+        if status != "impact_review":
+            result.update(fields={}, rows=[], cleared=[], missing=gate)
+            if department:
+                department["status"] = status
+    result["reply"] = role_notice + result["reply"]
+    return result

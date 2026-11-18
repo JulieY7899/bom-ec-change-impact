@@ -100,6 +100,15 @@
             </div>
             <p id="workflow-dialogue-status" class="muted" role="status"></p>
           </form>
+          <section class="workflow-transfer hidden" id="workflow-department" aria-labelledby="workflow-department-title">
+            <h3 id="workflow-department-title">部门核查问题</h3>
+            <p id="workflow-department-topics"></p>
+            <dl id="workflow-department-scope"></dl>
+            <p class="muted">这里显示对话提供的范围。核查表列出可带入分析的参数。</p>
+            <h4>需核对的证据</h4>
+            <ul id="workflow-department-evidence"></ul>
+            <p id="workflow-department-owner"></p>
+          </section>
           <section class="workflow-transfer hidden" id="workflow-transfer" aria-labelledby="workflow-transfer-title">
             <h3 id="workflow-transfer-title">对话整理出的字段</h3>
             <dl id="workflow-collected-fields"></dl>
@@ -119,7 +128,9 @@
                   <option value="">选择角色</option>
                   <option value="rd">研发</option><option value="procurement">采购</option>
                   <option value="sales">销售</option><option value="manufacturing">制造</option>
-                  <option value="engineering">工程</option>
+                  <option value="engineering">工程</option><option value="planning">计划</option>
+                  <option value="warehouse">仓储</option><option value="quality">质量</option>
+                  <option value="service">售后</option>
                 </select>
               </label>
               <div id="workflow-role-managed" class="hidden">
@@ -616,6 +627,6 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="/app.js?v=snapshot-reliability"></script>
-  <script src="/workflow.js?v=workflow-data-preparation"></script>
+  <script src="/workflow.js?v=department-intent"></script>
 </body>
 </html>

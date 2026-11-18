@@ -12,9 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
+from .workflow import ROLES as WORKFLOW_ROLES
+
 SESSION_SECONDS = 8 * 60 * 60
 GROUPS = ("engineering", "procurement", "other")
-ROLES = ("engineering", "procurement", "rd", "manufacturing", "sales")
+ROLES = tuple(WORKFLOW_ROLES)
 
 
 def default_roles(department):
