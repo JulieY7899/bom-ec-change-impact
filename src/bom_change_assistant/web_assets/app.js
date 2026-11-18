@@ -55,6 +55,8 @@ const sourceTypeLabels = {
   sales_master_reference: "销售视图",
   assignment_reference: "任务清单分配",
   source_list_reference: "供应来源清单",
+  procurement_data: "采购行及到货流水",
+  procurement_summary: "采购范围汇总",
   planning_supply_demo: "计划备料虚拟数据",
   unrecognized: "未识别数据",
 };
@@ -742,10 +744,20 @@ function renderAnalysis(result) {
 
   renderPlanningImpact(result.planning_impact);
   appendChangeChecks($("#tab-planning"), result);
+  appendProcurement($("#tab-planning"), result);
   renderManufacturingImpact(result.manufacturing_impact);
   renderOrderTable("#tab-production", result.production_orders, "production");
   renderOrderTable("#tab-sales", result.sales_orders, "sales");
   renderWarnings(result.warnings);
+}
+
+function appendProcurement(host, result) {
+  (result.procurement_impact?.sections || []).forEach((section) => {
+    const card = reportElement("div", "report-card");
+    card.appendChild(reportElement("h4", "", section.title));
+    section.lines.forEach((line) => card.appendChild(reportElement("p", "", line)));
+    host.appendChild(card);
+  });
 }
 
 function appendChangeChecks(host, result) {
@@ -1435,6 +1447,7 @@ function renderReport(report, result = state.result) {
   }
 
   appendChangeChecks(riskSection, result);
+  appendProcurement(riskSection, result);
   const orderGrid = reportElement("div", "report-two-column report-orders");
   [
     ["生产订单", result.production_orders, (item) =>

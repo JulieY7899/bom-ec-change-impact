@@ -9,6 +9,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_DATA = {'data/.gitkeep', 'data/README.md', 'reports/.gitkeep'}
 TEMPLATE = 'outputs/bom-import-template/BOM工程变更数据导入模板.xlsx'
+TEMPLATES = {TEMPLATE, 'outputs/b19-import-template/B19采购与到货导入示例.xlsx'}
 FORBIDDEN_PREFIXES = ('work/', 'output/', '.playwright-cli/', '.venv/')
 GENERATED = {'examples/sample-report.md', 'examples/sample-result.json',
              'examples/verification.json', 'docs/profile-draft.md'}
@@ -31,14 +32,14 @@ def main() -> int:
                 or re.search(r'\.(?:sqlite3|sqlite|db)(?:-|$)', name)
                 or path.suffix in {'.log', '.zip', '.csv', '.tsv'}
                 or (name.startswith(('data/', 'reports/')) and name not in ALLOWED_DATA)
-                or (name.startswith('outputs/') and name != TEMPLATE)
-                or (path.suffix in {'.xlsx', '.xls'} and name != TEMPLATE)):
+                or (name.startswith('outputs/') and name not in TEMPLATES)
+                or (path.suffix in {'.xlsx', '.xls'} and name not in TEMPLATES)):
             issues.append(f'{name}: runtime or unreviewed data file')
             continue
         blob = subprocess.check_output(['git', 'show', ':' + name], cwd=ROOT)
         if any(pattern.search(blob) for pattern in PATTERNS):
             issues.append(f'{name}: credential-shaped text or private local path')
-        if name == TEMPLATE:
+        if name in TEMPLATES:
             import io
             with zipfile.ZipFile(io.BytesIO(blob)) as workbook:
                 if any(pattern.search(workbook.read(member))

@@ -291,9 +291,11 @@ class Handler(BaseHTTPRequestHandler):
                 attachment="BOM-impact-report.md",
             )
             return
-        if route.path == "/api/import-template.xlsx":
+        if route.path in {"/api/import-template.xlsx", "/api/procurement-template.xlsx"}:
+            template = (TEMPLATE_PATH.parent.parent / "b19-import-template" / "B19采购与到货导入示例.xlsx"
+                        if route.path == "/api/procurement-template.xlsx" else TEMPLATE_PATH)
             try:
-                body = TEMPLATE_PATH.read_bytes()
+                body = template.read_bytes()
             except FileNotFoundError:
                 self._error(404, "导入模板尚未生成")
                 return
@@ -301,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 body,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                attachment="BOM-import-template.xlsx",
+                attachment="B19-synthetic-import-example.xlsx" if route.path == "/api/procurement-template.xlsx" else "BOM-import-template.xlsx",
             )
             return
         self._serve_asset(route.path)
@@ -456,8 +458,14 @@ class Handler(BaseHTTPRequestHandler):
             )
         ecn_values = self.state.repository.reserve_ecns(len(prepared_results))
         items: list[dict[str, Any]] = []
-        for result, ecn in zip(prepared_results, ecn_values):
+        for result, ecn, payload in zip(prepared_results, ecn_values, changes):
+            result["procurement_query"] = {k: str(payload.get(k) or "") for k in ("planning_plant", "storage_location")}
             result["ecn"] = ecn
+            from .procurement import analyze as analyze_procurement
+            result["procurement_impact"] = analyze_procurement(
+                self.state.repository, [{**result["change"], "change_type": result["change"]["type"],
+                                         **result["procurement_query"], "ecn": ecn}]
+            )
             result["summary"] = rule_summary(result)
             report = markdown_report(result)
             self.state.repository.save_analysis(
@@ -478,6 +486,17 @@ class Handler(BaseHTTPRequestHandler):
             )
             combined = self._combine_bom_version_results(
                 draft_id, bom_version, version_results
+            )
+            from .procurement import analyze as analyze_procurement
+            combined["procurement_impact"] = analyze_procurement(
+                self.state.repository, [
+                    {"change_type": item["change"]["type"], "old_component": item["change"].get("old_component", ""),
+                     "new_component": item["change"].get("new_component", ""),
+                     "planning_plant": item.get("procurement_query", {}).get("planning_plant", ""),
+                     "storage_location": item.get("procurement_query", {}).get("storage_location", ""),
+                     "effective_date": item["change"].get("effective_date", ""), "ecn": item["ecn"]}
+                    for item in version_results
+                ]
             )
             combined["change_checks"] = [
                 {

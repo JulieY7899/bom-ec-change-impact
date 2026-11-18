@@ -2,7 +2,9 @@
 
 [![Verify synthetic examples](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml)
 
-**V1.1-mac2 (0.2.2).** Failed import batches preserve the previous snapshot; browser and downloaded reports now include sales lines, quantity deltas and review reasons. All 55 regressions passed. Of 25 previously approved business cases, 23 passed and 2 remain capability gaps. **Remaining gaps: B19 purchase commitments/receipts and B22 engineering versions/order references.** See the [verification record](docs/evaluation.md) for scope and limitations.
+**V1.2-B19 (0.3.0)** adds purchase-line snapshots, receipts, returns, full reversals and reconciliation. The API, planning view and downloadable report show consistent quantities, evidence rows and review items. The original B19 summary of 50/20/30 remains supported, with missing order, unit, date or receipt details shown explicitly. Procurement commitments are reviewed separately by engineering, procurement and planning. See the [procurement guide and example](docs/procurement.md).
+
+Local synthetic validation passed 87 automated tests, including 28 procurement scenarios. Of the original 25 business cases, 24 passed. **B22 remains unsupported:** the tool cannot yet determine scope from an independent engineering revision, a specific BOM row and an order’s reference to that revision.
 
 
 **Local decision support for engineering change reviews**
@@ -19,7 +21,7 @@ This prototype uses imported multilevel BOMs, orders and proposed changes to tra
 
 *This diagram is generated from the saved analysis output; it is not a UI screenshot.*
 
-[Demo case](examples/README.md) · [Verification record](docs/evaluation.md) · [Business rules](docs/business-rules.md) · [Design decisions](docs/decisions.md)
+[Demo case](examples/README.md) · [Historical verification](docs/evaluation.md) · [Business rules](docs/business-rules.md) · [Design decisions](docs/decisions.md)
 
 ## A change from input to evidence
 
@@ -93,14 +95,14 @@ python3 scripts/check_public_files.py
 
 CI runs on Linux with Python 3.11 / 3.12 / 3.14 and macOS with Python 3.14. The badge links to the actual GitHub Actions results.
 
-Coverage includes multilevel traversal, order association, effectivity boundaries, quantity completeness, review-batch isolation, reports and local HTTP behavior. See the [verification record](docs/evaluation.md) for the actual run environment, results and unverified areas.
+Coverage includes procurement reconciliation, multilevel traversal, order association, effectivity boundaries, quantity completeness, review-batch isolation, reports and local HTTP behavior. See [GitHub Actions](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml) for current run results.
 
 ## Data handling and limitations
 
 - External model calls are blocked, including when `OPENAI_API_KEY` is present. The server is restricted to loopback addresses and checks Host and Origin headers.
 - Local SQLite storage retains some business identifiers and is not encrypted at rest by the application. Databases, operational reports, logs and credentials are outside the public portfolio.
 - An imported snapshot is not an independent EBOM revision. Date comparisons do not determine Order BOM migration, net material requirements or inventory consumption.
-- Multi-file import does not yet provide atomic rollback of the entire snapshot. Check completeness after an import failure before analyzing it.
+- Multi-file imports are staged as a batch. A successful batch backs up the previous snapshot before activation. A failed or canceled import leaves the active snapshot and saved analyses available.
 - This is a single-machine prototype without a production authorization model, enterprise integration or an approval workflow. Business benefits and adoption have not been validated in this prototype.
 
-The next priorities are an explicit revision and order-reference model, complete-snapshot import and additional business boundary cases. Each extension should start with an expected behavior that can be verified.
+The next priorities are an explicit engineering revision and order-reference model, plus additional business boundary cases. Each extension should start with an expected behavior that can be verified.
