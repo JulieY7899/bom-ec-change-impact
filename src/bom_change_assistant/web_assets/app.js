@@ -35,6 +35,7 @@ async function api(path, options = {}) {
 }
 
 const pageTitles = {
+  workflow: "业务核查工作流",
   import: "数据准备",
   draft: "变更登记",
   analysis: "影响核查",
@@ -74,6 +75,7 @@ function showView(name) {
   $$(".view").forEach((view) => view.classList.remove("active"));
   $(`#view-${name}`).classList.add("active");
   $("#page-title").textContent = pageTitles[name];
+  if (name === "analysis") document.dispatchEvent?.(new Event("bom-analysis-view"));
   if (name === "draft") {
     loadMaterials();
     loadChangeLog();
@@ -182,9 +184,6 @@ async function refreshStatus() {
     renderBomVersions(data.top_bom_details || []);
     renderSources(data.sources || []);
     $("#change-log-count").textContent = `${formatNumber(data.change_log_count)} 条`;
-    $("#ai-explain").classList.toggle("hidden", !data.ai_configured);
-    $("#ai-status").textContent = "";
-    $("#ai-status").classList.add("hidden");
     if (data.ready && !state.result) {
       const response = await fetch("/api/analysis/last");
       if (response.ok) {
@@ -304,26 +303,29 @@ async function importFiles() {
   const button = $("#import-files");
   progress.classList.remove("hidden");
   button.disabled = true;
-  let started = false;
+  let batchHeaders;
   try {
-    await api("/api/snapshot/start", {
+    const { batch_id } = await api("/api/snapshot/start", {
       method: "POST", body: JSON.stringify({ expected_files: state.files.length }),
     });
-    started = true;
+    batchHeaders = batch_id ? { "X-BOM-Import-Batch": batch_id } : {};
     for (let index = 0; index < state.files.length; index += 1) {
       const percent = Math.round((index / state.files.length) * 100);
       $("#progress-bar").style.width = `${percent}%`;
       $("#progress-label").textContent = `解析数据源 ${index + 1}/${state.files.length}`;
       await api("/api/import/file", {
         method: "POST",
-        headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+        headers: {
+          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          ...batchHeaders,
+        },
         body: state.files[index],
       });
     }
     $("#progress-bar").style.width = "96%";
     $("#progress-label").textContent = "建立业务编号索引";
-    await api("/api/snapshot/finish", { method: "POST" });
-    started = false;
+    const { stats } = await api("/api/snapshot/finish", { method: "POST", headers: batchHeaders });
+    batchHeaders = null;
     resetSnapshotResults();
     $("#progress-bar").style.width = "100%";
     $("#progress-label").textContent = "导入完成";
@@ -331,10 +333,12 @@ async function importFiles() {
     $("#file-input").value = "";
     chooseFiles([]);
     await refreshStatus();
-    toast("核查数据已导入，旧快照已在本机备份");
+    toast(stats?.backup_cleanup_pending
+      ? "核查数据已导入，部分过期备份暂未清理"
+      : "核查数据已导入，旧快照已在本机备份");
   } catch (error) {
-    if (started) {
-      try { await api("/api/snapshot/abort", { method: "POST" }); } catch (_) { /* Old active snapshot remains untouched. */ }
+    if (batchHeaders) {
+      try { await api("/api/snapshot/abort", { method: "POST", headers: batchHeaders }); } catch (_) { /* Old active snapshot remains untouched. */ }
       $("#progress-label").textContent = "导入未完成；旧快照保持可用";
     }
     toast(error.message, true);
@@ -343,6 +347,7 @@ async function importFiles() {
 }
 
 function resetSnapshotResults() {
+  document.dispatchEvent?.(new Event("bom-snapshot-replaced"));
   state.result = null;
   state.report = "";
   state.batchItems = [];
@@ -359,10 +364,12 @@ function resetSnapshotResults() {
 async function loadDemo() {
   try {
     $("#load-demo").disabled = true;
-    await api("/api/demo", { method: "POST" });
+    const { stats } = await api("/api/demo", { method: "POST" });
     resetSnapshotResults();
     await refreshStatus();
-    toast("虚拟演示数据已载入；不代表企业实际业务数据");
+    toast(stats?.backup_cleanup_pending
+      ? "虚拟演示数据已载入，部分过期备份暂未清理"
+      : "虚拟演示数据已载入；不代表企业实际业务数据");
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -786,6 +793,7 @@ async function loadChangeLog() {
 }
 
 function renderAnalysis(result) {
+  document.dispatchEvent?.(new Event("bom-analysis-rendered"));
   $("#analysis-empty").classList.add("hidden");
   $("#analysis-result").classList.remove("hidden");
   $("#result-title").textContent = result.analysis_kind === "bom_version"
@@ -1746,30 +1754,6 @@ function renderReport(report, result = state.result) {
   ));
 }
 
-async function aiExplain() {
-  const button = $("#ai-explain");
-  button.disabled = true;
-  $("#ai-status").classList.remove("hidden");
-  $("#ai-status").textContent = "正在根据脱敏核查结果生成补充说明…";
-  try {
-    const data = await api("/api/ai", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ analysis_id: state.result?.analysis_id || "" }),
-    });
-    state.report = data.report;
-    state.result.ai_explanation = data.text;
-    renderReport(data.report, state.result);
-    $("#ai-status").textContent = "补充说明已生成；该段文字不参与影响范围和关注等级判定。";
-    toast("补充说明已加入报告");
-  } catch (error) {
-    $("#ai-status").textContent = error.message;
-    toast(error.message, true);
-  } finally {
-    button.disabled = false;
-  }
-}
-
 function setup() {
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
   $$("[data-jump]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.jump)));
@@ -1792,7 +1776,6 @@ function setup() {
   $("#old-effective-date-options").addEventListener("change", (event) => {
     $("#old-effective-date").value = event.target.value;
   });
-  $("#ai-explain").addEventListener("click", aiExplain);
 
   const drop = $("#drop-zone");
   ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (event) => {

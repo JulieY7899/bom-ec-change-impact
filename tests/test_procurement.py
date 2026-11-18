@@ -4,6 +4,8 @@ import html
 import http.client
 import json
 import os
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 import tempfile
 import threading
@@ -294,11 +296,10 @@ class ProcurementAcceptanceTests(unittest.TestCase):
         self.assertEqual(self.request('/api/analysis/last',method='GET'),old)
         self.upload();self.assertEqual(self.result()[1]['lines'],[])
         backups=list(self.root.rglob('*.sqlite3'))
-        import sqlite3
         preserved=False
         for backup in backups:
             if backup==self.state.repository.database_path:continue
-            with sqlite3.connect(backup) as c:
+            with closing(sqlite3.connect(backup)) as c:
                 try:preserved |= c.execute('SELECT COUNT(*) FROM procurement_records').fetchone()[0]==2
                 except sqlite3.OperationalError:pass
         self.assertTrue(preserved,'Successful replacement must retain purchase evidence in a backup')

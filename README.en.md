@@ -97,6 +97,15 @@ CI runs on Linux with Python 3.11 / 3.12 / 3.14 and macOS with Python 3.14. The 
 
 Coverage includes procurement reconciliation, multilevel traversal, order association, effectivity boundaries, quantity completeness, review-batch isolation, reports and local HTTP behavior. See [GitHub Actions](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml) for current run results.
 
+## Recent fixes
+
+- **Production order status.** The importer matches complete SAP status codes. `PCNF` and `REL PCNF` count as in progress for impact and risk review, even when the order quantity is missing.
+- **Local import reliability.** Request bodies are read outside the shared lock, with length validation and read timeouts. The active snapshot remains available during an upload, and failed or late uploads cannot replace it.
+- **Snapshot backups.** After a successful import, each database keeps its three latest managed backups. Existing legacy backups are preserved.
+- **Analysis performance.** The analysis loads BOM edges reachable from the selected material. Each batch shares one set of procurement evidence, and a single-item group reuses the item's procurement analysis.
+
+**Earlier snapshots require reimport.** They contain the classified status only. To correct PCNF misclassification, reimport the complete batch from the original Excel exports, then rerun the analysis and generate a new report.
+
 ## Data handling and limitations
 
 - External model calls are blocked, including when `OPENAI_API_KEY` is present. The server is restricted to loopback addresses and checks Host and Origin headers.

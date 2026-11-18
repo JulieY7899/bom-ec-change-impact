@@ -6,9 +6,11 @@ from pathlib import Path
 
 from bom_change_assistant.demo import load_demo_snapshot
 from bom_change_assistant.impact_engine import ImpactEngine, ImpactError
+from bom_change_assistant.importers import WorkbookImporter, _status_category
 from bom_change_assistant.models import ChangeRequest
 from bom_change_assistant.repository import Repository
 from bom_change_assistant.summaries import markdown_report
+from tests.test_procurement import workbook
 
 
 class ImpactEngineTests(unittest.TestCase):
@@ -21,6 +23,42 @@ class ImpactEngineTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
+
+    def test_sap_production_status_tokens_and_precedence(self) -> None:
+        for raw, expected in (
+            ("PCNF", "已释放/执行中"), ("REL PCNF", "已释放/执行中"),
+            ("rel,pcnf", "已释放/执行中"), ("PDLV", "已释放/执行中"),
+            ("部分确认", "已释放/执行中"), ("部分交货", "已释放/执行中"),
+            ("REL CNF", "已完成"), ("DLV", "已完成"),
+            ("REL PCNF TECO", "已关闭"), ("CLSD CNF", "已关闭"),
+            ("XCNF", "其他/待确认"), ("PREL", "其他/待确认"),
+            ("CRTD", "已创建"), ("", "未知"),
+        ):
+            with self.subTest(status=raw):
+                self.assertEqual(_status_category(raw), expected)
+
+    def test_imported_partial_confirmation_with_unknown_quantity_stays_in_production(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "production.xlsx"
+            workbook(path, [[
+                ["订单", "销售订单", "销售订单项目", "物料", "系统状态", "订单数量", "已交货数量"],
+                ["PROD-PCNF", None, None, "FG-A", "PCNF", None, None],
+                ["PROD-REL-PCNF", None, None, "FG-A", "REL PCNF", 40, 0],
+                ["PROD-CNF", None, None, "FG-A", "REL CNF", 40, 0],
+            ]])
+            WorkbookImporter(self.repository).import_file(path)
+        self.repository.finish_snapshot()
+        result = self.engine.analyze(ChangeRequest(
+            change_type="remove", old_component="COMP-001", effective_date="2026-08-01",
+        ))
+        production = {row["production_order"]: row for row in result["production_orders"]}
+        for identifier in ("PROD-PCNF", "PROD-REL-PCNF"):
+            self.assertEqual(production[identifier]["status"], "已释放/执行中")
+        self.assertIsNone(production["PROD-PCNF"]["order_quantity"])
+        self.assertEqual(production["PROD-CNF"]["status"], "已完成")
+        self.assertEqual(result["manufacturing_impact"]["stage_counts"]["WIP/生产中"], 3)
+        self.assertEqual(result["manufacturing_impact"]["stage_counts"]["完工未交付"], 1)
+        self.assertIn("关联 3 个已释放或执行中的生产订单", result["risk"]["reasons"])
 
     def test_multilevel_trace_and_order_linkage(self) -> None:
         result = self.engine.analyze(

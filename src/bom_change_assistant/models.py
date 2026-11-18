@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from enum import StrEnum
+from typing import Any, TypedDict
 
 
 @dataclass
@@ -49,3 +50,39 @@ class ChangeRequest:
     disposition_owner: str = ""
     disposition_status: str = "待评审"
     disposition_note: str = ""
+
+
+class OrderStatus(StrEnum):
+    # These values are the existing SQLite and report labels.
+    UNKNOWN = "未知"
+    OPEN = "已释放/执行中"
+    COMPLETED = "已完成"
+    CLOSED = "已关闭"
+    CREATED = "已创建"
+    REVIEW = "其他/待确认"
+
+
+class RiskLevel(StrEnum):
+    LOW = "低"
+    MEDIUM = "中"
+    HIGH = "高"
+
+    @staticmethod
+    def priority(level: str) -> int:
+        return {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}.get(level, 0)
+
+
+class RiskAssessment(TypedDict):
+    level: RiskLevel
+    reasons: list[str]
+
+
+class AnalysisItem(TypedDict):
+    result: dict[str, Any]
+    report: str
+
+
+class AnalysisBatch(TypedDict):
+    draft_id: str
+    items: list[AnalysisItem]
+    groups: list[AnalysisItem]

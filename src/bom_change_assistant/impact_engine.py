@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
+from . import procurement
+from .bom_graph import traverse
 from .config import MAX_ENUMERATED_PATHS
 from .dispositions import resolve_disposition
 from .impact_checks import (
     quantity_check, effectivity_comparison, order_demand_coverage, sum_known_quantities,
     production_progress_metrics,
 )
-from .models import ChangeRequest
+from .models import ChangeRequest, OrderStatus, RiskAssessment, RiskLevel
 from .normalization import coerce_date, safe_text
 from .repository import Repository
 
@@ -29,14 +31,11 @@ class ImpactEngine:
     def __init__(self, repository: Repository):
         self.repository = repository
 
-    def analyze(self, request: ChangeRequest) -> dict[str, Any]:
+    def analyze(self, request: ChangeRequest, *, include_procurement: bool = True) -> dict[str, Any]:
         """Calculate both business views for every proposed BOM change."""
-        upstream = self._analyze_direction(
-            replace(request, propagation_direction="upstream")
-        )
-        downstream = self._analyze_direction(
-            replace(request, propagation_direction="downstream")
-        )
+        alias_maps = self.repository.alias_maps()
+        upstream = self._analyze_direction(replace(request, propagation_direction="upstream"), alias_maps)
+        downstream = self._analyze_direction(replace(request, propagation_direction="downstream"), alias_maps)
         result = self._combine_directions(upstream, downstream)
         if request.change_type in {"add", "replace"}:
             validation = self.repository.material_readiness(request.new_component)
@@ -58,9 +57,9 @@ class ImpactEngine:
                 if reason not in result["risk"]["reasons"]:
                     result["risk"]["reasons"].append(reason)
                 if validation["status"] == "不通过":
-                    result["risk"]["level"] = "高"
-                elif result["risk"]["level"] == "低":
-                    result["risk"]["level"] = "中"
+                    result["risk"]["level"] = RiskLevel.HIGH
+                elif result["risk"]["level"] == RiskLevel.LOW:
+                    result["risk"]["level"] = RiskLevel.MEDIUM
         else:
             result["material_validation"] = {
                 "applicable": False,
@@ -70,16 +69,12 @@ class ImpactEngine:
                 "evidence_sources": [],
             }
         result["planning_impact"] = self._planning_impact(request, result)
-        from .procurement import analyze as analyze_procurement
-        result["procurement_impact"] = analyze_procurement(
-            self.repository, [{**asdict(request), "effective_date": result["change"]["effective_date"]}]
-        )
-        if result["procurement_impact"]["business_review_required"]:
-            for view in [result, *result["directions"].values()]:
-                for warning in view.get("warnings", []):
-                    if warning["code"] == "NO_PROCUREMENT":
-                        warning["code"] = "PROCUREMENT_REVIEW"
-                        warning["message"] = "已匹配采购证据；请核查采购行、到货覆盖和差异，取消条件与切换仍需工程、采购、计划共同确认。"
+        if include_procurement:
+            query = procurement.query_for_change(
+                result["change"], planning_plant=request.planning_plant,
+                storage_location=request.storage_location, ecn=request.ecn,
+            )
+            procurement.attach_impact(result, procurement.analyze(procurement.load_evidence(self.repository), [query]))
         result["manufacturing_impact"] = self._manufacturing_impact(
             request, result
         )
@@ -97,15 +92,17 @@ class ImpactEngine:
                 effective_date=request.old_effective_date,
             )
             before = self._combine_directions(
-                self._analyze_direction(replace(original, propagation_direction="upstream")),
-                self._analyze_direction(replace(original, propagation_direction="downstream")),
+                self._analyze_direction(replace(original, propagation_direction="upstream"), alias_maps),
+                self._analyze_direction(replace(original, propagation_direction="downstream"), alias_maps),
             )
             result["effectivity_comparison"] = effectivity_comparison(
                 before, result
             )
         return result
 
-    def _analyze_direction(self, request: ChangeRequest) -> dict[str, Any]:
+    def _analyze_direction(
+        self, request: ChangeRequest, alias_maps: dict[str, dict[str, str]],
+    ) -> dict[str, Any]:
         if request.change_type not in VALID_CHANGE_TYPES:
             raise ImpactError("不支持的变更类型")
         direction = request.propagation_direction or "upstream"
@@ -135,120 +132,15 @@ class ImpactEngine:
             label = "目标父件" if is_add else "原组件"
             raise ImpactError(f"未在当前导入数据中找到{label}")
 
-        alias_maps = self.repository.alias_maps()
-        anchor_column = "component_key" if direction == "upstream" else "parent_key"
         with self.repository.connect() as connection:
-            edge_rows = connection.execute(
-                """
-                SELECT * FROM bom_edges
-                WHERE date_valid=1
-                  AND (valid_from IS NULL OR valid_from<=?)
-                  AND (valid_to IS NULL OR valid_to>=?)
-                ORDER BY top_key, component_key, parent_key, edge_id
-                """,
-                (effective_date, effective_date),
-            ).fetchall()
-            invalid_anchor_dates = connection.execute(
-                f"""
-                SELECT COUNT(*) FROM bom_edges
-                WHERE ({anchor_column}=? OR top_key=?) AND date_valid=0
-                """,
-                (anchor_key, anchor_key),
-            ).fetchone()[0]
-            all_anchor_uses = connection.execute(
-                f"SELECT COUNT(*) FROM bom_edges "
-                f"WHERE {anchor_column}=? OR top_key=?",
-                (anchor_key, anchor_key),
-            ).fetchone()[0]
-
-        upward: dict[tuple[str, str], list[Any]] = defaultdict(list)
-        downward: dict[tuple[str, str], list[Any]] = defaultdict(list)
-        top_keys: set[str] = set()
-        for row in edge_rows:
-            upward[(row["top_key"], row["component_key"])].append(row)
-            downward[(row["top_key"], row["parent_key"])].append(row)
-            top_keys.add(row["top_key"])
-
-        candidate_tops = sorted(
-            top
-            for top in top_keys
-            if (
-                (top, anchor_key)
-                in (upward if direction == "upstream" else downward)
-                or top == anchor_key
-            )
-        )
-
-        raw_paths: list[tuple[str, list[str], list[Any]]] = []
-        cycles: list[list[str]] = []
-        incomplete_branches = 0
-        truncated = False
-
-        def walk_upstream(
-            top_key: str,
-            current: str,
-            nodes: list[str],
-            edges: list[Any],
-            visited: set[str],
-        ) -> None:
-            nonlocal incomplete_branches, truncated
-            if len(raw_paths) >= MAX_ENUMERATED_PATHS:
-                truncated = True
-                return
-            if current == top_key:
-                raw_paths.append((top_key, list(nodes), list(edges)))
-                return
-            parents = upward.get((top_key, current), [])
-            if not parents:
-                incomplete_branches += 1
-                return
-            for edge in parents:
-                parent = edge["parent_key"]
-                if parent in visited:
-                    cycles.append(nodes + [parent])
-                    continue
-                walk_upstream(
-                    top_key,
-                    parent,
-                    nodes + [parent],
-                    edges + [edge],
-                    visited | {parent},
-                )
-
-        def walk_downstream(
-            top_key: str,
-            current: str,
-            nodes: list[str],
-            edges: list[Any],
-            visited: set[str],
-        ) -> None:
-            nonlocal truncated
-            if len(raw_paths) >= MAX_ENUMERATED_PATHS:
-                truncated = True
-                return
-            children = downward.get((top_key, current), [])
-            if not children:
-                if edges:
-                    raw_paths.append((top_key, list(nodes), list(edges)))
-                return
-            for edge in children:
-                child = edge["component_key"]
-                if child in visited:
-                    cycles.append(nodes + [child])
-                    continue
-                walk_downstream(
-                    top_key,
-                    child,
-                    nodes + [child],
-                    edges + [edge],
-                    visited | {child},
-                )
-
-        for top_key in candidate_tops:
-            if direction == "upstream":
-                walk_upstream(top_key, anchor_key, [anchor_key], [], {anchor_key})
-            else:
-                walk_downstream(top_key, anchor_key, [anchor_key], [], {anchor_key})
+            traversal = traverse(connection, anchor_key, effective_date, direction)
+        candidate_tops = traversal.candidate_tops
+        raw_paths = traversal.paths
+        cycles = traversal.cycles
+        incomplete_branches = traversal.incomplete_branches
+        truncated = traversal.truncated
+        invalid_anchor_dates = traversal.invalid_anchor_dates
+        all_anchor_uses = traversal.all_anchor_uses
 
         if is_add and direction == "downstream":
             for top_key in candidate_tops:
@@ -269,15 +161,7 @@ class ImpactEngine:
         def top_alias(key: str) -> str:
             return alias_maps.get("top", {}).get(key, material_alias(key))
 
-        direct_edge_rows = [
-            edge
-            for top in candidate_tops
-            for edge in (
-                upward.get((top, anchor_key), [])
-                if direction == "upstream"
-                else downward.get((top, anchor_key), [])
-            )
-        ]
+        direct_edge_rows = traversal.direct_edges
         direct_related_keys = {
             edge["parent_key"]
             if direction == "upstream"
@@ -301,7 +185,7 @@ class ImpactEngine:
             if direction == "downstream"
             else {top for top, _, _ in raw_paths}
         )
-        if anchor_key in top_keys:
+        if anchor_key in candidate_tops:
             impacted_top_keys.add(anchor_key)
 
         paths: list[dict[str, Any]] = []
@@ -503,7 +387,7 @@ class ImpactEngine:
         ):
             warn(code, message)
 
-        risk_level, risk_reasons = self._risk_level(
+        risk = self._risk_level(
             impacted_top_keys,
             paths,
             production_orders,
@@ -563,7 +447,7 @@ class ImpactEngine:
                     else "到末端物料的完整展开路径"
                 ),
             },
-            "risk": {"level": risk_level, "reasons": risk_reasons},
+            "risk": risk,
             "metrics": {
                 "direct_parents": len(direct_related_keys),
                 "all_parents": len(all_related_keys),
@@ -670,10 +554,9 @@ class ImpactEngine:
             "note": "未匹配到历史记录不表示该物料从未发生变更。",
         }
 
-        level_order = {"低": 0, "中": 1, "高": 2}
         risk_level = max(
             (upstream["risk"]["level"], downstream["risk"]["level"]),
-            key=lambda level: level_order.get(level, 0),
+            key=RiskLevel.priority,
         )
         risk_reasons = list(
             dict.fromkeys(
@@ -798,16 +681,16 @@ class ImpactEngine:
                   ON pm.production_order_key=p.production_order_key
                 WHERE ({" OR ".join(conditions)})
                   AND (
-                    p.status_category IN ('已释放/执行中')
+                    p.status_category=?
                     OR (
-                      p.status_category='已完成'
+                      p.status_category=?
                       AND pm.order_quantity IS NOT NULL
                       AND COALESCE(pm.delivered_quantity, 0) < pm.order_quantity
                     )
                   )
                 ORDER BY p.production_order_key
                 """,
-                tuple(order_parameters),
+                (*order_parameters, OrderStatus.OPEN, OrderStatus.COMPLETED),
             ).fetchall()
 
         sales_orders: list[dict[str, Any]] = []
@@ -893,8 +776,8 @@ class ImpactEngine:
 
     @staticmethod
     def _production_needs_attention(item: dict[str, Any]) -> bool:
-        return item.get("status") in {"已释放/执行中"} or (
-            item.get("status") == "已完成"
+        return item.get("status") == OrderStatus.OPEN or (
+            item.get("status") == OrderStatus.COMPLETED
             and (
                 item.get("undelivered_quantity") is None
                 or float(item["undelivered_quantity"]) > 0
@@ -1146,10 +1029,10 @@ class ImpactEngine:
     def _manufacturing_stage(
         status: str, undelivered_quantity: float | None = None
     ) -> str:
-        if status == "已完成" and float(undelivered_quantity or 0) > 0:
+        if status == OrderStatus.COMPLETED and float(undelivered_quantity or 0) > 0:
             return "完工未交付"
         return {
-            "已释放/执行中": "WIP/生产中",
+            OrderStatus.OPEN: "WIP/生产中",
         }.get(status, "状态待确认")
 
     @staticmethod
@@ -1382,13 +1265,13 @@ class ImpactEngine:
         production_orders: list[dict[str, Any]],
         alternative_keys: set[str],
         warnings: list[dict[str, str]],
-    ) -> tuple[str, list[str]]:
+    ) -> RiskAssessment:
         high_reasons: list[str] = []
         medium_reasons: list[str] = []
         if len(impacted_tops) > 1:
             high_reasons.append("影响多个顶层成品")
         active_orders = sum(
-            order["status"] == "已释放/执行中" for order in production_orders
+            order["status"] == OrderStatus.OPEN for order in production_orders
         )
         if active_orders:
             high_reasons.append(f"关联 {active_orders} 个已释放或执行中的生产订单")
@@ -1401,7 +1284,7 @@ class ImpactEngine:
         if any(warning["code"] in critical_codes for warning in warnings):
             high_reasons.append("关键日期或 BOM 使用路径资料不完整")
         if high_reasons:
-            return "高", high_reasons
+            return {"level": RiskLevel.HIGH, "reasons": high_reasons}
 
         if production_orders:
             medium_reasons.append("存在关联生产订单")
@@ -1410,5 +1293,5 @@ class ImpactEngine:
         if len(paths) > 1:
             medium_reasons.append("存在多条 BOM 使用路径")
         if medium_reasons:
-            return "中", medium_reasons
-        return "低", ["影响范围单一，未发现已知订单或关键路径缺口"]
+            return {"level": RiskLevel.MEDIUM, "reasons": medium_reasons}
+        return {"level": RiskLevel.LOW, "reasons": ["影响范围单一，未发现已知订单或关键路径缺口"]}

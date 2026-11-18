@@ -3,14 +3,16 @@ from __future__ import annotations
 
 from collections import defaultdict
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import date, datetime
 import hashlib
 import json
 import math
 import re
-from typing import Any
+from typing import Any, TypedDict
 
 from .normalization import normalize_header
+from .privacy import PrivacyKey
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS procurement_records (
@@ -176,8 +178,7 @@ def identity(r):
     return tuple(r[k] for k in ('po', 'item', 'plant'))
 
 
-def match_scope(repository, r, request):
-    privacy = repository.privacy_key()
+def match_scope(privacy, r, request):
     materials = [request['new_component']] if request['change_type'] == 'add' else [request['old_component']]
     if request['change_type'] == 'replace':
         materials.append(request['new_component'])
@@ -257,18 +258,61 @@ def receipt_check(line, events):
             'events': events, 'future_excluded': future}
 
 
-def analyze(repository, requests):
-    """One pass over records for single or batch requests; each record counted once."""
-    records = all_records(repository)
+class ProcurementQuery(TypedDict):
+    change_type: str
+    old_component: str
+    new_component: str
+    effective_date: str
+    planning_plant: str
+    storage_location: str
+    ecn: str
+
+
+def query_for_change(change, *, planning_plant="", storage_location="", ecn="") -> ProcurementQuery:
+    return {
+        "change_type": change["type"],
+        "old_component": change.get("old_component", ""),
+        "new_component": change.get("new_component", ""),
+        "effective_date": change.get("effective_date", ""),
+        "planning_plant": planning_plant,
+        "storage_location": storage_location,
+        "ecn": ecn,
+    }
+
+
+@dataclass(frozen=True)
+class ProcurementEvidence:
+    records: list[dict[str, Any]]
+    privacy: PrivacyKey
+
+
+def load_evidence(repository) -> ProcurementEvidence:
+    return ProcurementEvidence(all_records(repository), repository.privacy_key())
+
+
+def attach_impact(result: dict[str, Any], impact: dict[str, Any]) -> None:
+    result["procurement_impact"] = impact
+    if impact["business_review_required"]:
+        for view in [result, *result["directions"].values()]:
+            for warning in view.get("warnings", []):
+                if warning["code"] == "NO_PROCUREMENT":
+                    warning["code"] = "PROCUREMENT_REVIEW"
+                    warning["message"] = "已匹配采购证据；请核查采购行、到货覆盖和差异，取消条件与切换仍需工程、采购、计划共同确认。"
+
+
+def analyze(evidence: ProcurementEvidence, requests: list[ProcurementQuery]):
+    """Read shared evidence; copy matching records before adding per-run decisions."""
+    records, privacy = evidence.records, evidence.privacy
     lines = [x for x in records if x['kind'] != 'RECEIPT']
     events = [x for x in records if x['kind'] == 'RECEIPT']
     output = []
     orphans = []
     for line in lines:
-        matches = [(q, match_scope(repository, line, q)) for q in requests]
+        matches = [(q, match_scope(privacy, line, q)) for q in requests]
         matches = [(q, m) for q, m in matches if m]
         if not matches:
             continue
+        line = deepcopy(line)
         line['match_status'] = '精确匹配' if all(m == '精确匹配' for _, m in matches) else '范围待确认'
         line['change_refs'] = list(dict.fromkeys(q.get('ecn') or '本项' for q, _ in matches))
         line['issues'] = []
@@ -302,8 +346,9 @@ def analyze(repository, requests):
                     '日期相符仍需计划确认' if effective and line['expected_date'] == effective else '需计划确认切换窗口'})
         output.append(line)
     for e in events:
-        matches = [(q, match_scope(repository, e, q)) for q in requests]
+        matches = [(q, match_scope(privacy, e, q)) for q in requests]
         if any(m for _, m in matches) and not any(identity(e) == identity(l) for l in output if l['kind']=='PURCHASE_LINE'):
+            e = deepcopy(e)
             e['issues'] = ['未匹配采购行，缺少采购余额证据']
             e['change_refs'] = list(dict.fromkeys(q.get('ecn') or '本项' for q,m in matches if m))
             orphans.append(e)

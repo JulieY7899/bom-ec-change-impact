@@ -10,9 +10,11 @@ from typing import Any, Iterator
 
 from .engineering import SCHEMA as ENGINEERING_SCHEMA
 from .engineering import VersionSnapshot
+from .knowledge import SCHEMA as KNOWLEDGE_SCHEMA
 from .normalization import safe_text
 from .privacy import PrivacyKey
 from .procurement import SCHEMA as PROCUREMENT_SCHEMA
+from .workflow import SCHEMA as WORKFLOW_SCHEMA
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -233,9 +235,10 @@ CREATE INDEX IF NOT EXISTS idx_change_log_created
     ON change_log(created_at DESC);
 """
 
-SCHEMA += PROCUREMENT_SCHEMA + ENGINEERING_SCHEMA
+SCHEMA += PROCUREMENT_SCHEMA + ENGINEERING_SCHEMA + KNOWLEDGE_SCHEMA + WORKFLOW_SCHEMA
 
 DATA_TABLES = (
+    "workflow_runs",
     "engineering_evidence",
     "procurement_records",
     "analysis_runs",
@@ -264,9 +267,9 @@ class Repository:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
         try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
             yield connection
             connection.commit()
         except Exception:

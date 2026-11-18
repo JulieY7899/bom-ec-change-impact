@@ -46,12 +46,3 @@ class PrivacyKey:
             normalized = re.sub(r"[\s\-_/\.]+", "", normalized)
         payload = f"{kind}:{normalized}".encode("utf-8")
         return hmac.new(self.secret, payload, hashlib.sha256).hexdigest()
-
-    def safety_identifier(self) -> str:
-        return hmac.new(
-            self.secret, b"openai-safety:local-user", hashlib.sha256
-        ).hexdigest()[:32]
-
-
-def file_fingerprint(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()

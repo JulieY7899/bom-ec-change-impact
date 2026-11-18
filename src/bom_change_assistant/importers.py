@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
+import unicodedata
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
 from .engineering import import_rows as import_engineering_rows
-from .models import ImportResult
+from .models import ImportResult, OrderStatus
 from .normalization import (
     coerce_date,
     coerce_int,
@@ -18,6 +21,7 @@ from .normalization import (
     safe_text,
 )
 from .privacy import PrivacyKey
+from .procurement import import_rows as import_procurement_rows
 from .repository import Repository
 from .xlsx_reader import XlsxWorkbook
 
@@ -113,19 +117,23 @@ def _first_nonempty(
     return None
 
 
-def _status_category(*values: Any) -> str:
-    text = " ".join(safe_text(value, 80).upper() for value in values if value)
+def _status_category(*values: Any) -> OrderStatus:
+    text = " ".join(safe_text(value, 80).upper() for value in values if value).strip()
     if not text:
-        return "未知"
-    if any(token in text for token in ("TECO", "CLSD", "DLFL", "删除", "关闭")):
-        return "已关闭"
-    if any(token in text for token in ("DLV", "CNF", "完成", "交货")):
-        return "已完成"
-    if any(token in text for token in ("REL", "PCNF", "释放", "执行", "开工")):
-        return "已释放/执行中"
-    if any(token in text for token in ("CRTD", "创建")):
-        return "已创建"
-    return "其他/待确认"
+        return OrderStatus.UNKNOWN
+    tokens = set(re.findall(r"[A-Z0-9_]+", unicodedata.normalize("NFKC", text)))
+    partial = r"部分(?:已)?(?:确认|完成|交货)"
+    if tokens & {"TECO", "CLSD", "DLFL"} or re.search(r"(?<!未)(?:删除|关闭)", text):
+        return OrderStatus.CLOSED
+    if tokens & {"DLV", "CNF"} or re.search(
+        r"全部确认|全量确认|(?<!未)(?:完成|交货)", re.sub(partial, "", text)
+    ):
+        return OrderStatus.COMPLETED
+    if tokens & {"REL", "PCNF", "PDLV"} or re.search(rf"(?<!未)(?:释放|执行|开工)|{partial}", text):
+        return OrderStatus.OPEN
+    if "CRTD" in tokens or "创建" in text:
+        return OrderStatus.CREATED
+    return OrderStatus.REVIEW
 
 
 def _master_status_category(*values: Any) -> str:
@@ -199,8 +207,7 @@ class WorkbookImporter:
                         connection, source_id, sheet_count, headers, rows
                     )
                 elif source_type in {"procurement_data", "procurement_summary"}:
-                    from .procurement import import_rows
-                    seen, imported, sheet_warnings = import_rows(
+                    seen, imported, sheet_warnings = import_procurement_rows(
                         connection, source_id, sheet_count, headers, rows, source_type == "procurement_summary"
                     )
                 else:
@@ -227,7 +234,7 @@ class WorkbookImporter:
                     total_seen,
                     total_imported,
                     len(warnings),
-                    __import__("json").dumps(warnings, ensure_ascii=False),
+                    json.dumps(warnings, ensure_ascii=False),
                     source_id,
                 ),
             )

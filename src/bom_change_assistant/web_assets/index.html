@@ -23,7 +23,8 @@
       </div>
 
       <nav aria-label="主导航">
-        <button class="nav-item active" data-view="import">
+        <button class="nav-item active" data-view="workflow">业务核查工作流</button>
+        <button class="nav-item" data-view="import">
           <span class="nav-index">01</span><span>数据准备</span>
         </button>
         <button class="nav-item" data-view="draft">
@@ -50,7 +51,7 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">工程变更影响核查</p>
-          <h1 id="page-title">数据准备</h1>
+          <h1 id="page-title">业务核查工作流</h1>
         </div>
         <div class="topbar-actions">
           <span class="status-pill"><i></i><span id="snapshot-state">等待导入</span></span>
@@ -58,7 +59,117 @@
         </div>
       </header>
 
-      <section class="view active" id="view-import">
+      <section class="view active" id="view-workflow">
+        <article class="panel workflow-panel">
+          <div class="panel-heading">
+            <div>
+              <h2>用对话准备核查</h2>
+              <p>说出你想核查的问题，可以分多轮补充或更正。整理好的字段可以一键填入核查表。</p>
+            </div>
+            <button class="button secondary" data-jump="import" type="button">导入 BOM 和订单</button>
+          </div>
+          <div class="workflow-dialogue-log" id="workflow-dialogue-log" role="log" aria-label="核查对话">
+            <p class="workflow-message">想核查什么变更？可以先说业务问题，物料、版本和日期可以后补。</p>
+          </div>
+          <form id="workflow-dialogue">
+            <label class="workflow-question">
+              核查消息
+              <textarea id="workflow-message" rows="2" maxlength="500" required placeholder="例如：从采购角度，想看 COMP-001 换成 COMP-NEW 会影响哪些到货。"></textarea>
+            </label>
+            <div class="action-row">
+              <button type="submit" class="button primary" id="workflow-send">发送</button>
+              <button type="button" class="button ghost" id="workflow-new-dialogue" disabled>开始新对话</button>
+            </div>
+            <p id="workflow-dialogue-status" class="muted" role="status"></p>
+          </form>
+          <section class="workflow-transfer hidden" id="workflow-transfer" aria-labelledby="workflow-transfer-title">
+            <h3 id="workflow-transfer-title">对话整理出的字段</h3>
+            <dl id="workflow-collected-fields"></dl>
+            <button type="button" class="button primary" id="workflow-apply">一键填入核查表</button>
+            <p id="workflow-transfer-status" class="muted" role="status"></p>
+          </section>
+        </article>
+
+        <article class="panel workflow-panel">
+          <details id="workflow-draft">
+            <summary>核查表 · 确认结构化参数</summary>
+            <p class="muted">也可以直接填写或修改字段。完成数据预检后再运行。</p>
+          <form id="workflow-form">
+            <div class="field-grid">
+              <label>核查角色
+                <select name="role">
+                  <option value="">选择角色</option>
+                  <option value="rd">研发</option><option value="procurement">采购</option>
+                  <option value="sales">销售</option><option value="manufacturing">制造</option>
+                  <option value="engineering">工程</option>
+                </select>
+              </label>
+              <label>核查范围
+                <select name="analysis_mode">
+                  <option value="">默认按物料</option>
+                  <option value="material">按物料追溯所有使用位置</option>
+                  <option value="engineering">按工程版本和 BOM 行核查</option>
+                </select>
+              </label>
+              <label>变更类型
+                <select name="change_type">
+                  <option value="">选择变更类型</option>
+                  <option value="replace">替换组件</option><option value="remove">删除组件</option>
+                  <option value="quantity">修改用量</option><option value="add">新增组件</option>
+                  <option value="effectivity">改变生效日期</option>
+                </select>
+              </label>
+              <label>拟生效日期<input name="effective_date" type="date"></label>
+              <label data-wf-changes="replace remove quantity effectivity">原组件<input name="old_component" maxlength="100"></label>
+              <label data-wf-changes="replace add">新组件<input name="new_component" maxlength="100"></label>
+              <label data-wf-changes="add">目标父件<input name="target_parent" maxlength="100"></label>
+              <label data-wf-changes="quantity">原用量<input name="old_quantity" type="number" min="0" step="any"></label>
+              <label data-wf-changes="quantity">新用量<input name="new_quantity" type="number" min="0" step="any"></label>
+              <label data-wf-changes="effectivity">原生效日期<input name="old_effective_date" type="date"></label>
+              <label data-wf-engineering>成品<input name="product" maxlength="100"></label>
+              <label data-wf-engineering>工程版本工厂，可为空<input name="plant" maxlength="100"></label>
+              <label data-wf-engineering>工程版本<input name="engineering_version" maxlength="100"></label>
+              <label data-wf-engineering>目标 BOM 行号<input name="target_bom_row" maxlength="100"></label>
+              <label>采购工厂，可为空<input name="planning_plant" maxlength="100"></label>
+              <label>采购库位，可为空<input name="storage_location" maxlength="100"></label>
+            </div>
+            <div class="action-row">
+              <button type="submit" class="button primary" id="workflow-prepare">预检核查参数</button>
+              <button type="button" class="button secondary" id="workflow-run" disabled>确认参数并运行</button>
+            </div>
+          </form>
+          <div id="workflow-preflight" aria-live="polite"></div>
+          <button type="button" class="button secondary hidden" id="workflow-open-preparation">带入 01 数据准备</button>
+          </details>
+        </article>
+
+        <article class="panel workflow-panel hidden" id="workflow-output" aria-live="polite">
+          <div class="panel-heading">
+            <h2>最近一次核查结果</h2>
+            <div class="action-row">
+              <button class="button secondary" type="button" id="workflow-open-analysis">查看 03 影响核查</button>
+              <a class="button secondary" id="workflow-download" download>下载工作流报告</a>
+            </div>
+          </div>
+          <ol class="workflow-steps" id="workflow-steps"></ol>
+          <div id="workflow-answer"></div>
+          <details>
+            <summary>完整规则证据与报告</summary>
+            <pre id="workflow-report"></pre>
+          </details>
+        </article>
+      </section>
+
+      <section class="view" id="view-import">
+        <article class="panel workflow-panel hidden" id="workflow-data-plan" aria-labelledby="workflow-data-title">
+          <h2 id="workflow-data-title" tabindex="-1">本次核查的数据准备</h2>
+          <p id="workflow-data-status" class="muted" role="status"></p>
+          <dl id="workflow-data-fields" class="workflow-transfer"></dl>
+          <h3>建议核对的导出资料</h3>
+          <ul id="workflow-data-sources"></ul>
+          <ul id="workflow-data-issues"></ul>
+          <button type="button" class="button secondary" id="workflow-back-to-draft">返回核查表</button>
+        </article>
         <div class="hero-grid">
           <article class="panel upload-panel">
             <div class="panel-heading">
@@ -362,6 +473,27 @@
             <div class="risk-badge" id="risk-badge"><span>关注等级</span><strong>—</strong></div>
           </div>
 
+        <article class="panel workflow-panel hidden" id="engineering-knowledge">
+          <details>
+            <summary>工程辅助分析 · PPT 知识库</summary>
+            <p>按本次工程核查的主题检索已审核的参考材料。</p>
+            <button class="button secondary" type="button" id="engineering-knowledge-search">检索工程知识</button>
+            <div id="engineering-knowledge-references" aria-live="polite"></div>
+            <p class="muted" id="workflow-library">读取知识库…</p>
+            <p>选择已脱敏的 PPTX。只索引你勾选并确认的文本摘录，按文档编号和页码引用。</p>
+            <div class="action-row">
+              <label>演示文稿<input type="file" id="workflow-ppt" accept=".pptx"></label>
+              <button class="button secondary" type="button" id="workflow-preview">提取文本并预览</button>
+            </div>
+            <form id="workflow-index" class="hidden">
+              <div id="workflow-excerpts"></div>
+              <label class="workflow-check"><input type="checkbox" id="workflow-approved" required>我已核对勾选的摘录，摘录可用于工程辅助分析</label>
+              <button class="button primary" type="submit" id="workflow-save">加入知识库</button>
+            </form>
+            <p id="workflow-knowledge-status" aria-live="polite"></p>
+          </details>
+        </article>
+
           <div id="engineering-result" class="hidden"></div>
           <div id="ordinary-analysis">
           <div class="direction-overview">
@@ -441,11 +573,9 @@
           <div class="result-head">
             <div><p class="kicker">核查报告</p><h2>工程变更影响核查报告</h2><p>报告根据当前核查结果生成；保留业务编号，敏感名称统一显示为 XXX。</p></div>
             <div class="action-row">
-              <button class="button secondary hidden" id="ai-explain">生成补充说明（可选）</button>
               <a class="button primary" id="report-download" href="/api/report.md" download>下载报告（Markdown）</a>
             </div>
           </div>
-          <div class="ai-status hidden" id="ai-status"></div>
           <article class="report-paper" id="report-content"></article>
         </div>
       </section>
@@ -453,6 +583,7 @@
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="/app.js?v=portfolio-v1.3-b22"></script>
+  <script src="/app.js?v=snapshot-reliability"></script>
+  <script src="/workflow.js?v=workflow-data-preparation"></script>
 </body>
 </html>
