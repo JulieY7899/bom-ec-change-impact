@@ -42,6 +42,8 @@ jobs:
       - name: Check synthetic portfolio scenario
         run: python scripts/run_example.py --check
       - name: Check browser JavaScript syntax
-        run: node --check src/bom_change_assistant/web_assets/app.js
+        run: |
+          node --check src/bom_change_assistant/web_assets/app.js
+          node --check src/bom_change_assistant/web_assets/workflow.js
       - name: Check quantity labels and values in both views
         run: node scripts/check_frontend_metrics.cjs
