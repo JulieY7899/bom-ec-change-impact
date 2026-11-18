@@ -36,7 +36,7 @@ ACTION_WORDS = {
     "quantity": r"(?:修改|调整|变更)(?:用量|单耗)|(?:用量|单耗)(?:从|改)",
     "effectivity": r"(?:修改|改变|调整|变更)生效(?:日期|日)?",
 }
-ROLE_PROMPT = "这次从哪个视角核查？可以回复研发、采购、销售、制造或工程。"
+ROLE_PROMPT = "这次从哪个视角核查？可以回复" + "、".join(workflow.ROLES.values()) + "。"
 ACTION_PROMPT = "你打算替换、删除、新增组件，还是调整用量或生效日期？"
 PROMPTS = {
     "role": ROLE_PROMPT,
@@ -270,16 +270,20 @@ def _missing(draft):
     return list(dict.fromkeys(missing))
 
 
-def collect(messages):
+def collect(messages, *, active_role=None):
     if not isinstance(messages, list) or not 0 < len(messages) <= MAX_TURNS:
         raise ValueError("请发送 1 到 30 条对话消息")
     if any(not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE for message in messages):
         raise ValueError("每条消息须包含 1 到 500 个字符")
     draft, cleared, last = {}, set(), {}
+    if active_role:
+        draft["role"] = active_role
     missing = _missing(draft)
     for raw in messages:
         message = unicodedata.normalize("NFKC", raw).strip().rstrip("。！？")
         last = _new_details(message, draft, missing[0] if missing else None)
+        if active_role:
+            last.pop("role", None)
         if "target_bom_row" not in last and any(
             field in last and field in draft and last[field] != draft[field] for field in SCOPE_FIELDS
         ):
@@ -306,9 +310,9 @@ def collect(messages):
         missing = _missing(draft)
     rows = []
     for field, label in workflow.LABELS.items():
-        if field in draft:
+        if field in draft and (field != "role" or not active_role):
             value = draft[field]
-            display = workflow.ROLES[value][0] if field == "role" else workflow._display_field(field, value)
+            display = workflow.ROLES[value] if field == "role" else workflow._display_field(field, value)
             rows.append({"field": field, "label": label, "display": display})
     recognized = [str(row["display"]) if row["field"] in ("role", "change_type")
                   else f'{row["label"]} {row["display"]}' for row in rows if row["field"] in last]

@@ -120,6 +120,10 @@
                   <option value="rd">研发</option><option value="procurement">采购</option>
                   <option value="sales">销售</option><option value="manufacturing">制造</option>
                   <option value="engineering">工程</option>
+                  <option value="planning">计划物控</option>
+                  <option value="warehouse">仓储物流</option>
+                  <option value="quality">质量</option>
+                  <option value="service">售后服务</option>
                 </select>
               </label>
               <div id="workflow-role-managed" class="hidden">
@@ -152,8 +156,8 @@
               <label data-wf-engineering>工程版本工厂，可为空<input name="plant" maxlength="100"></label>
               <label data-wf-engineering>工程版本<input name="engineering_version" maxlength="100"></label>
               <label data-wf-engineering>目标 BOM 行号<input name="target_bom_row" maxlength="100"></label>
-              <label>采购工厂，可为空<input name="planning_plant" maxlength="100"></label>
-              <label>采购库位，可为空<input name="storage_location" maxlength="100"></label>
+              <label>采购或备料工厂，可为空<input name="planning_plant" maxlength="100"></label>
+              <label>采购或备料库位，可为空<input name="storage_location" maxlength="100"></label>
             </div>
             <div class="action-row">
               <button type="submit" class="button primary" id="workflow-prepare">预检核查参数</button>

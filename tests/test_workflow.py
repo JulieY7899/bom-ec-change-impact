@@ -213,6 +213,101 @@ class WorkflowTests(unittest.TestCase):
             result = self.request("/api/analysis/by-id?analysis_id=" + run_id, method="GET")
             self.assertEqual(result["result"]["engineering_knowledge_available"], permitted)
 
+    def test_nine_department_accounts_use_own_role_evidence_and_knowledge_permissions(self):
+        self.import_bom()
+        self.login_as("engineering")
+        engineer_run = self.engineering_run()
+        self.index_document(engineer_run)
+        cases = {
+            "engineering": ("工程", "bom", "上溯路径"),
+            "rd": ("研发", "bom", "上溯路径"),
+            "procurement": ("采购", "purchases", "剩余承诺 30"),
+            "planning": ("计划物控", "po_overlap", "计划结论待核"),
+            "warehouse": ("仓储物流", "warehouse_stock", "1 条有到货事件明细"),
+            "manufacturing": ("制造", "production_orders", "生产工单"),
+            "quality": ("质量", "quality_release", "质量验证和放行证据待补"),
+            "sales": ("销售", "sales_order_rows", "销售订单行"),
+            "service": ("售后服务", "installed_base", "备件互换性待核"),
+        }
+        for role, (label, preparation_key, evidence) in cases.items():
+            with self.subTest(role=role):
+                self.login_as(role)
+                identity = self.request("/api/account", method="GET")["identity"]
+                self.assertEqual((identity["department"], identity["active_role"], identity["roles"]),
+                                 (role, role, [role]))
+                ungranted = "procurement" if role == "engineering" else "engineering"
+                self.request("/api/account/role", {"role": ungranted}, status=403)
+                self.preflight(role=ungranted, status=403)
+                prepared = self.preflight()
+                self.assertEqual(prepared["context"]["role"], role)
+                self.assertIn(preparation_key, {entry["key"] for entry in prepared["data_preparation"]["sources"]})
+                result = self.run_review(prepared)
+                answer = result["answer"]
+                self.assertEqual(answer["role"], label)
+                self.assertTrue(any(evidence in line for line in answer["facts"]), answer)
+                self.assertTrue(answer["review_actions"])
+                if role == "engineering":
+                    self.assertTrue(any("临时替代条件" in action for action in answer["review_actions"]))
+                if role == "rd":
+                    self.assertTrue(any("设计验证" in action for action in answer["review_actions"]))
+                if role == "planning":
+                    self.assertTrue(any("库位 待补" in item for item in answer["facts"]))
+                    self.assertTrue(any("可用库存 待补数据" in item for item in answer["facts"]))
+                    self.assertFalse(any("剩余承诺" in item for item in answer["facts"]))
+                for suffix, method in (("", "GET"), ("/references", "GET"), ("/references", "POST"),
+                                       ("/preview", "POST"), ("/index", "POST")):
+                    if role != "engineering":
+                        self.request(self.knowledge_url(engineer_run, suffix), method=method, status=403)
+                if role == "engineering":
+                    self.assertEqual(self.request(self.knowledge_url(engineer_run, "/references"), method="GET")
+                                     ["matches"][0]["text"], REVIEWED)
+                key = result["run_id"]
+                downloaded = self.request("/api/workflow/report.md?run_id=" + key, method="GET")
+                self.assertEqual(downloaded, result["report"])
+                self.assertIn(f"## {label}核查", downloaded)
+                self.assertNotIn(REVIEWED, downloaded)
+                self.assertNotIn(REVIEWED, self.request("/api/report.md?analysis_id=" + key, method="GET"))
+
+    def test_planning_retains_source_values_without_assuming_po_and_transit_are_disjoint(self):
+        path = self.root / "planning.xlsx"
+        purchases = [[label for _, label in COLUMNS], [BASE.get(key) for key, _ in COLUMNS]]
+        supply = [
+            ["场景编号", "数据属性", "旧物料", "新物料", "工厂", "库位",
+             "旧料可用库存", "旧料在途", "旧料 Open PO", "切换前旧料可消耗需求",
+             "新料可用库存", "新料在途", "新料 Open PO", "切换后新料需求"],
+            ["SC-ROLE-01", "DEMO_ONLY", "PART-OLD", "PART-NEW", "PLANT-T", "STORE-T",
+             15, 20, 30, 25, 0, None, 12, 30],
+        ]
+        workbook(path, [OLD_BOM, purchases, supply])
+        self.request("/api/snapshot/start", {"expected_files": 1})
+        self.request("/api/import/file", path.read_bytes())
+        self.request("/api/snapshot/finish")
+        self.login_as("planning")
+        prepared = self.preflight(draft={"planning_plant": "PLANT-T", "storage_location": "STORE-T"})
+        sources = {item["key"]: item["status"] for item in prepared["data_preparation"]["sources"]}
+        self.assertEqual(sources["planning_supply"], "待核")
+        self.assertEqual(sources["po_overlap"], "需补资料")
+        facts = self.run_review(prepared)["answer"]["facts"]
+        self.assertTrue(any("工厂 PLANT-T · 库位 STORE-T" in line for line in facts))
+        self.assertTrue(any("可用库存 15 · 在途 20 · 未交采购 30" in line for line in facts))
+        self.assertTrue(any("可用库存 0 · 在途 待补数据 · 未交采购 12" in line for line in facts))
+        self.assertTrue(any("计划结论待核" in line for line in facts))
+        self.assertFalse(any("供应合计" in line or "Run-in Change" in line for line in facts))
+        no_scope = self.preflight(draft={"planning_plant": "PLANT-T", "storage_location": "STORE-X"})
+        self.assertEqual(next(item["status"] for item in no_scope["data_preparation"]["sources"]
+                              if item["key"] == "planning_supply"), "需补资料")
+
+    def test_department_dialogue_infers_viewpoint_without_changing_authenticated_role(self):
+        for phrase, role in (("计划物控", "planning"), ("仓储物流", "warehouse"),
+                             ("质量", "quality"), ("售后", "service"), ("制造工程", "manufacturing")):
+            with self.subTest(phrase=phrase):
+                request = {"messages": [f"我是{phrase}，2026-12-01 把 PART-OLD 换成 PART-NEW"]}
+                self.assertEqual(self.request("/api/workflow/dialogue", request)["fields"]["role"], role)
+        self.login_as("planning")
+        dialogue = self.request("/api/workflow/dialogue", {"messages": [f"我是采购，{QUESTION}"]})
+        self.assertEqual(dialogue["fields"]["role"], "planning")
+        self.assertNotIn("role", [row["field"] for row in dialogue["rows"]])
+
     def test_provisioning_never_writes_to_the_business_database(self):
         db = self.state.repository.database_path
         before = db.read_bytes()

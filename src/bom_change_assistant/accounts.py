@@ -12,13 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
+from .roles import LABELS
+
 SESSION_SECONDS = 8 * 60 * 60
-GROUPS = ("engineering", "procurement", "other")
-ROLES = ("engineering", "procurement", "rd", "manufacturing", "sales")
+ROLES = tuple(LABELS)
+GROUPS = (*ROLES, "other")
 
 
 def default_roles(department):
-    return (department,) if department in ("engineering", "procurement") else ("rd",)
+    return ("rd" if department == "other" else department,)
 
 
 @dataclass(frozen=True)

@@ -9,6 +9,7 @@ from datetime import date
 
 from . import engineering, knowledge, knowledge_store, procurement
 from .normalization import coerce_date, coerce_number
+from .roles import LABELS as ROLES
 
 CONTRACT = "bom-workflow-v1"
 SCHEMA = """
@@ -18,16 +19,14 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     report_markdown TEXT NOT NULL
 );
 """
-ROLES = {
-    "rd": ("研发", "研发 设计验证 BOM结构 组件 父件 替换 互换 路径 用量"),
-    "procurement": ("采购", "采购 承诺 到货 收货 冲销 退货 供应来源 未交 可取消"),
-    "sales": ("销售", "销售订单 订单行 需求日期 交期 配置 项目 版本引用"),
-    "manufacturing": ("制造", "制造 生产工单 工单 领料 投料 报工 生产状态 完工"),
-    "engineering": ("工程", "工程版本 EBOM BOM行 生效 替换 路径 版本引用 变更"),
-}
+ENGINEERING_SEARCH_TERMS = "工程版本 EBOM BOM行 生效 替换 路径 版本引用 变更"
 KEYWORDS = {
     "rd": ("研发", "设计", "用在哪里", "父件", "互换"),
     "procurement": ("采购", "承诺", "到货", "收货", "退货", "供应商"),
+    "planning": ("计划物控", "齐套", "切换缺口"),
+    "warehouse": ("仓储", "实物盘点", "隔离库"),
+    "quality": ("质量", "复验", "检验放行"),
+    "service": ("售后", "维修备件", "存量设备"),
     "sales": ("销售", "交期", "交货", "客户需求", "订单行"),
     "manufacturing": ("制造", "生产", "工单", "领料", "投料", "报工"),
     "engineering": ("工程", "ebom", "版本引用", "生效", "bom 行", "bom行"),
@@ -50,7 +49,7 @@ IDENTITY_FIELDS = (
     "engineering_version", "target_bom_row", "planning_plant", "storage_location",
 )
 ID_WORD = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}"
-ROLE_LABELS = {label: key for key, (label, _) in ROLES.items()}
+ROLE_LABELS = {label: key for key, label in ROLES.items()}
 SCOPE_HINTS = {
     "product": r"成品(?:编号|料号)?",
     "plant": r"工厂(?:代码)?",
@@ -154,7 +153,11 @@ def _suggest(question):
 
 
 ROLE_ALIASES = {**ROLE_LABELS, "生产": "manufacturing", "生产现场": "manufacturing",
-                "制造工程": "engineering", "ME": "engineering"}
+                "制造工程": "manufacturing", "ME": "manufacturing",
+                "物料计划": "planning", "计划": "planning", "物控": "planning", "PMC": "planning",
+                "仓储": "warehouse", "物流": "warehouse", "仓库": "warehouse",
+                "品保": "quality", "质检": "quality", "售后": "service", "服务": "service",
+                "订单管理": "sales"}
 ROLE_PATTERN = "|".join(sorted(ROLE_ALIASES, key=len, reverse=True))
 
 
@@ -308,12 +311,25 @@ def _preflight(repository, draft, snapshot, issues):
             _issue(issues, "material_missing", "当前展开 BOM 中没有这个编号的有效结构记录", anchor)
 
 
+# Evidence gaps are specific to the department and do not block BOM tracing.
+DEPARTMENT_GAPS = {
+    "planning": ("po_overlap", "在途与未交采购去重证据",
+                 "需按采购订单行、发运批次与预计入库日期核对在途和未交数量。"),
+    "warehouse": ("warehouse_stock", "WMS 库存、批次与实物状态",
+                  "需补齐按物料、工厂、库位及批次的实物、在途、待检与隔离记录。"),
+    "quality": ("quality_release", "质量验证与放行证据",
+                "需补齐替代件检验、批次追溯、在制风险、返工验证及放行条件。"),
+    "service": ("installed_base", "已交付设备与维修备件",
+                "需补齐已交付设备序列号和版本、维修 BOM、备件库存与互换记录。"),
+}
+
+
 def _data_preparation(repository, context):
     draft, role, snapshot = (context[key] for key in ("draft", "role", "snapshot"))
     issues = context["issues"]
     codes = {issue["code"] for issue in issues}
     blocked = any(issue["level"] == "blocking" for issue in issues)
-    fields = [{"key": "role", "label": LABELS["role"], "value": ROLES[role][0]}] if role in ROLES else []
+    fields = [{"key": "role", "label": LABELS["role"], "value": ROLES[role]}] if role in ROLES else []
     fields.extend({"key": key, "label": label, "value": _display_field(key, draft[key])}
                   for key, label in LABELS.items() if draft.get(key) not in (None, ""))
     sources = []
@@ -341,13 +357,15 @@ def _data_preparation(repository, context):
             "需补资料" if not rows else "未找到目标物料" if "material_missing" in codes else
             "已找到目标物料" if not blocked else "已导入，范围待核",
             f'快照中有 {rows} 条有效结构行。')
-    if role == "procurement":
-        # The same scope used by the procurement rules, including plant and location.
+    if role in {"procurement", "planning", "warehouse"}:
+        # These roles share the scoped evidence. Each has its own business decision.
         scope = {"old_component": "", "new_component": "", **draft}
         records = procurement.all_records(repository) if snapshot["id"] else []
         privacy = repository.privacy_key()
         matches = [(entry["kind"], procurement.match_scope(privacy, entry, scope)) for entry in records]
         for kind, key, label in (("PURCHASE_LINE", "purchases", "采购承诺明细"), ("RECEIPT", "receipts", "到货、退货与冲销明细")):
+            if role == "warehouse" and kind != "RECEIPT":
+                continue
             matched = [status for record_kind, status in matches if record_kind == kind and status]
             add(key, label, "需补资料" if not matched else "待核" if "范围待确认" in matched else "有相关记录",
                 f'与所填物料及采购范围相关的记录 {len(matched)} 条。')
@@ -356,6 +374,17 @@ def _data_preparation(repository, context):
         count = snapshot[key]
         if not strict or count:
             add(key, label, "已导入，范围待核" if count else "需补资料", f'快照中有 {count} 条记录。')
+    if role == "planning":
+        scenario = None
+        if draft["change_type"] == "replace" and not blocked:
+            scenario = repository.planning_supply_scenario(
+                draft["old_component"], draft["new_component"], draft["planning_plant"], draft["storage_location"]
+            )
+        add("planning_supply", "备料情景与切换前后需求", "待核" if scenario else "需补资料",
+            "按物料、工厂与库位核对库存、在途、未交采购和需求口径。")
+    if gap := DEPARTMENT_GAPS.get(role):
+        key, label, detail = gap
+        add(key, label, "需补资料", detail)
     return {"fields": fields, "sources": sources}
 
 
@@ -443,7 +472,45 @@ def _order_answer(role, result, check):
     return [f"{label}版本引用命中 {buckets[0]} 个，排除 {buckets[1]} 个，引用待核 {buckets[2]} 个。", *records]
 
 
-def _answer(role, result):
+def _procurement_coverage(result):
+    entries = [entry for entry in result["procurement_impact"]["lines"] if entry["kind"] == "PURCHASE_LINE"]
+    return len(entries), sum(bool(entry["receipt_check"]["events"]) for entry in entries)
+
+
+def _planning_facts(result, context):
+    planning = result.get("planning_impact", {})
+    scenario = planning.get("scenario", {})
+    numbers = scenario.get("inputs", {})
+    draft = context["draft"]
+    scope = planning.get("scope", {}) if scenario.get("provided") else {}
+    po_lines, _ = _procurement_coverage(result)
+    lines = [
+        f'备料范围 · 工厂 {scope.get("plant") or draft.get("planning_plant") or "待补"} · '
+        f'库位 {scope.get("storage_location") or draft.get("storage_location") or "待补"}',
+        f'关联采购订单行 {po_lines} 条，可用于逐行核对。',
+        f'备料情景来源 · {scenario.get("origin") or "未提供"}',
+    ]
+    if order_metrics := planning.get("metrics"):
+        lines.append(
+            f'关联需求线索 · 生产工单 {order_metrics["affected_production_orders"]} 条 · '
+            f'销售订单行 {order_metrics["affected_sales_items"]} 条'
+        )
+    for prefix, material, demand, label in (
+        ("old", "旧料", "old_consumable_demand", "切换前可消耗需求"),
+        ("new", "新料", "new_required_demand", "切换后所需需求"),
+    ):
+        lines.append(
+            f'{material}情景 · 可用库存 {procurement.shown(numbers.get(prefix + "_on_hand"))} · '
+            f'在途 {procurement.shown(numbers.get(prefix + "_in_transit"))} · '
+            f'未交采购 {procurement.shown(numbers.get(prefix + "_open_po"))} · '
+            f'{label} {procurement.shown(numbers.get(demand))}'
+        )
+    lines.append("计划结论待核。先按采购订单行核对在途和未交，再确认旧料剩余、新料缺口、齐套日期及切换方式。")
+    return lines
+
+
+def _answer(context, result):
+    role = context["role"]
     check = result.get("engineering_check")
     metrics = result["metrics"]
     if role in {"sales", "manufacturing"}:
@@ -460,6 +527,19 @@ def _answer(role, result):
                 f'剩余承诺 {procurement.shown(entry["O"])} {entry["unit"] or "单位待核"} · '
                 f'到货 {entry["receipt_check"]["status"]} · {procurement.evidence_text(entry["evidence"])}'
             )
+    elif role == "planning":
+        lines = _planning_facts(result, context)
+    elif role == "warehouse":
+        po_lines, receipts = _procurement_coverage(result)
+        lines = [f'关联采购订单行 {po_lines} 条，其中 {receipts} 条有到货事件明细。',
+                 "收货凭证与实物可用库存分别核对。实物、批次、待检与隔离证据待补。"]
+    elif role == "quality":
+        validation = result["material_validation"]
+        lines = [f'新组件主数据和寻源检查 · {validation["status"]}。',
+                 "质量验证和放行证据待补。"]
+    elif role == "service":
+        lines = [f'当前 BOM 关联到 {metrics["top_materials"]} 个成品，可供维修备件范围核对。',
+                 "已交付设备版本、维修 BOM 和备件互换性待核。"]
     elif check:
         lines = [
             check["path_issue"] or f'目标 BOM 行 {check["target"]["row_id"]} 的工程路径已定位。',
@@ -475,14 +555,21 @@ def _answer(role, result):
             lines.append("涉及成品 " + "、".join(result["top_materials"]))
     checklist = result.get("checklists", {})
     actions = {
-        "rd": checklist.get("研发", []),
-        "engineering": checklist.get("研发", []),
-        "manufacturing": checklist.get("制造", []),
+        "rd": [*checklist.get("研发", []), "核对互换验证和配置限制，确认需要补做的设计验证。"],
+        "engineering": ["核对受影响的 BOM 版本、产品及工厂，确认生效点和临时替代条件。"],
         "sales": ["回查订单行需求日期、配置及交付承诺，再由销售和计划复核。"],
-        "procurement": ["对照采购行及收货凭证核对到货覆盖和剩余承诺。"],
+        "procurement": [
+            "对照采购行及收货凭证核对到货覆盖和剩余承诺。",
+            "向供应商确认投产、发运、可改可撤数量、继续收货及可承诺日期。",
+        ],
+        "manufacturing": [*checklist.get("制造", []), "逐单核对实际领料、工序和在制进度，再确认改料、隔离或返工范围。"],
+        "planning": ["按物料、工厂、库位和采购订单行核对未交与在途重叠，再确认备料缺口及切换方案。"],
+        "warehouse": ["核对 WMS 库位、批次、待检和隔离状态，确认可用、退回或转用的范围。"],
+        "quality": ["核对新料验证、在制品和库存批次，确认复验、返工、隔离或放行条件。"],
+        "service": ["结合已交付设备版本、维修 BOM 和备件记录，确认替代兼容性与旧件保留范围。"],
     }[role]
     return {
-        "role": ROLES[role][0], "facts": lines, "review_actions": actions,
+        "role": ROLES[role], "facts": lines, "review_actions": actions,
     }
 
 
@@ -499,8 +586,7 @@ def _display_field(field, value):
 
 def finish(repository, context, item):
     result = item["result"]
-    role = context["role"]
-    answer = _answer(role, result)
+    answer = _answer(context, result)
     stages = [
         {"name": "输入确认", "status": "完成", "detail": f'{answer["role"]} · {CONTRACT}'},
         {"name": "数据预检", "status": "有待核项" if context["issues"] else "完成",
@@ -575,7 +661,7 @@ def engineering_references(repository, context, query="", section=""):
     automatic = not query.strip()
     if automatic:
         draft = context["draft"]
-        terms = [ROLES["engineering"][1], *context["focus"], CHANGE_TYPES[draft["change_type"]]]
+        terms = [ENGINEERING_SEARCH_TERMS, *context["focus"], CHANGE_TYPES[draft["change_type"]]]
         terms.extend(str(draft.get(k) or "") for k in
                      ("old_component", "new_component", "engineering_version", "target_bom_row"))
         query = " ".join(terms)[:240]

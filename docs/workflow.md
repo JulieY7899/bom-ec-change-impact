@@ -24,6 +24,8 @@
 
 ## 账号和角色
 
+[部门角色、共用证据、权限与验收标准](department-roles.md)
+
 1. 点击网页右上角「账号登录」，输入管理员分配的账号和口令。登录后同一位置显示账号和当前角色。
 2. 多角色账号可展开菜单，在「当前角色」选择一个已授权的角色。单角色账号直接显示其角色。核查表中的角色随登录会话更新。
 3. 切换后保留已填参数，按新角色重新预检。已经生成的报告仍绑定原核查记录和原角色。换用另一账号时，从同一菜单退出后重新登录。
@@ -38,12 +40,13 @@
 
 ### 本机配置示例
 
-本机管理员在受操作系统保护的独立目录维护账号库。服务以只读方式打开它。授权顺序的首项是默认角色。以下命令在用户目录下创建独立的试用目录，配置一个可切换的工程账号和一个采购账号。
+本机管理员在受操作系统保护的独立目录维护账号库。服务以只读方式打开它。授权顺序的首项是默认角色。以下命令在用户目录下创建独立的试用目录，为每个岗位配置独立账号。
 
 ```sh
 bom_trial_dir="$(mktemp -d "$HOME/bom-account-demo.XXXXXX")"
-python3 scripts/set_account.py --accounts "$bom_trial_dir/accounts.sqlite3" eng01 engineering --roles engineering procurement
-python3 scripts/set_account.py --accounts "$bom_trial_dir/accounts.sqlite3" buy01 procurement
+for role in engineering rd procurement planning warehouse manufacturing quality sales service; do
+  python3 scripts/set_account.py --accounts "$bom_trial_dir/accounts.sqlite3" "demo-$role" "$role"
+done
 python3 app.py --database "$bom_trial_dir/demo.sqlite3" --accounts "$bom_trial_dir/accounts.sqlite3"
 ```
 

@@ -8,6 +8,8 @@ V1.2-B19 procurement commitments, receipts, returns and reversals remain availab
 
 With a local account database configured, sign in from the top-right account menu. The role picker lists the roles granted to that account. Switching roles keeps draft fields, clears the previous preflight and removes any displayed knowledge excerpts. In **03 Impact Review**, an engineering-department account using the Engineering role can open a completed engineering review and work with a local knowledge library. Choose a redacted PPT, PPTX, Markdown or TXT file, review the excerpts, select a section and index the approved text. Search the selected section or the entire library. Enable Qdrant Local for on-device Chinese semantic search. Downloads use the original review record and exclude library content. [Workflow guide (Chinese)](docs/workflow.md#03-影响核查中的工程辅助分析) · [Local semantic search setup (Chinese)](docs/engineering-semantic.md)
 
+Nine review roles cover engineering, R&D, purchasing, material planning, warehouse and logistics, manufacturing, quality, sales, and service. Purchasing and material planning share order and receipt evidence. Each keeps its own review decisions. [Department roles and acceptance criteria (Chinese)](docs/department-roles.md)
+
 
 **Local decision support for engineering change reviews**
 
