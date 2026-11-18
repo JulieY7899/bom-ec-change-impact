@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     result_json TEXT NOT NULL,
     report_markdown TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS engineering_assessments (
+    run_id TEXT PRIMARY KEY REFERENCES workflow_runs(run_id) ON DELETE CASCADE,
+    reference_json TEXT NOT NULL
+);
 """
 ENGINEERING_SEARCH_TERMS = "工程版本 EBOM BOM行 生效 替换 路径 版本引用 变更"
 STANDALONE_ROLE_LABELS = {"planning": "计划", "warehouse": "仓储", "service": "售后"}
@@ -678,3 +682,69 @@ def engineering_references(repository, context, query="", section=""):
                      ("old_component", "new_component", "engineering_version", "target_bom_row"))
         query = " ".join(terms)[:240]
     return knowledge_store.retrieve(repository, query, section, context_query=automatic)
+
+
+ASSESSMENT_TITLE = "工程辅助推论（待复核）"
+REFERENCE_PATTERN = re.compile(r"[0-9a-f]{64}:[1-9][0-9]{0,4}:[1-9][0-9]{0,4}:[0-9a-f]{64}")
+ASSESSMENT_RULES = (
+    (r"退货|冲销|已收|到货|在途|未交|采购承诺", "按本次组件对应的采购订单行核对承诺、净到货及剩余量，同一订单行的在途量和未到货量按来源口径去重。"),
+    (r"版本引用|EBOM|BOM\s*行", "核对本次目标 BOM 行的适用条件与订单实际引用版本，按订单逐行确认是否适用该条要求。"),
+    (r"领料|投料|返工|工单|在制", "对照本次关联工单的领料、投料与执行状态，确认是否具备应用该条处置建议的条件。"),
+    (r"生效|切换|旧料", "对照本次拟生效日期和订单执行状态，复核该条要求的切换条件及旧料处置范围。"),
+    (r"互换|验证|测试|规格|尺寸", "核对本次组件和配置是否满足该条验证条件，补齐验证证据后再判断适用性。"),
+)
+
+
+def engineering_assessment(repository, run_id, context, references=None):
+    if references is not None:
+        if (not isinstance(references, list) or len(references) > 3
+                or any(not isinstance(ref, str) or not REFERENCE_PATTERN.fullmatch(ref) for ref in references)
+                or len(set(references)) != len(references)):
+            raise ValueError("请选择最多三个不同的已审核片段")
+    with repository.connect() as db:
+        if references is None:
+            row = db.execute("SELECT reference_json FROM engineering_assessments WHERE run_id=?", (run_id,)).fetchone()
+            references = json.loads(row[0]) if row else []
+            save = False
+        else:
+            save = True
+        hits = knowledge_store.resolve_references(repository, references)
+        missing = len(references) - len(hits)
+        if save:
+            if missing:
+                raise ValueError("部分片段已重新审核，请重新检索后选择")
+            db.execute("""
+                INSERT INTO engineering_assessments VALUES (?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET reference_json=excluded.reference_json
+            """, (run_id, json.dumps(references)))
+    findings = []
+    for hit in hits:
+        check = next((action for pattern, action in ASSESSMENT_RULES
+                      if re.search(pattern, hit["text"], re.IGNORECASE)),
+                     "对照本次变更的适用物料、范围和生效条件，复核该片段是否适用，记录需补充的工程证据。")
+        position = "段" if hit["kind"] == "text" else "页"
+        citation = " · ".join(filter(None, (hit["section_label"], hit["title"], hit["source_id"])))
+        citation += f' · 第 {hit["slide"]} {position} · 片段 {hit["chunk"]}'
+        findings.append({"citation": citation, "excerpt": hit["text"], "review": check})
+    draft = context["draft"]
+    fields = ("old_component", "new_component", "effective_date", "product", "engineering_version", "target_bom_row")
+    scope = " · ".join([CHANGE_TYPES[draft["change_type"]], *(
+        f"{LABELS[field]} {draft[field]}" for field in fields if draft.get(field)
+    )])
+    run = get_run(repository, run_id)
+    notice = f"{missing} 条片段已变更或撤回，请重新选择。" if missing else ""
+    return {"title": ASSESSMENT_TITLE, "scope": scope,
+            "facts": run["answer"]["facts"][:2], "findings": findings, "notice": notice}
+
+
+def engineering_report(base_report, assessment):
+    lines = ["", "", f'## {assessment["title"]}', "",
+             f'- 核查范围 · {_report_text(assessment["scope"])}']
+    lines.extend(f"- 规则依据 · {_report_text(fact)}" for fact in assessment["facts"])
+    if assessment["notice"]:
+        lines.append(f'- {assessment["notice"]}')
+    for item in assessment["findings"]:
+        excerpt = " ".join(item["excerpt"].split())
+        lines += ["", f'- 工程依据 · {_report_text(item["citation"])}',
+                  f"  - 摘录 · {_report_text(excerpt)}", f'  - 待复核 · {item["review"]}']
+    return base_report.rstrip() + "\n".join(lines) + "\n"

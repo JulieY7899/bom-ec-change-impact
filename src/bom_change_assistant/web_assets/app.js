@@ -89,6 +89,7 @@ function showView(name) {
   $(`#view-${name}`).classList.add("active");
   $("#page-title").textContent = pageTitles[name];
   if (name === "analysis") document.dispatchEvent?.(new Event("bom-analysis-view"));
+  if (name === "report") document.dispatchEvent?.(new Event("bom-report-view"));
   if (name === "draft") {
     loadMaterials();
     loadChangeLog();

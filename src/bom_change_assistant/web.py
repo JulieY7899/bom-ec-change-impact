@@ -194,6 +194,7 @@ class Download:
 JSON_POSTS = frozenset({
     "/api/account/login", "/api/account/logout", "/api/account/role", "/api/workflow/dialogue", "/api/workflow/preflight", "/api/workflow/run",
     "/api/engineering-knowledge/index", "/api/engineering-knowledge/references", "/api/snapshot/start", "/api/analyze", "/api/analyze-batch",
+    "/api/engineering-knowledge/assessment",
 })
 COMMAND_POSTS = frozenset({"/api/snapshot/finish", "/api/snapshot/abort", "/api/demo"})
 IMPORT_POSTS = frozenset({"/api/import/file", "/api/snapshot/finish", "/api/snapshot/abort"})
@@ -370,6 +371,24 @@ class Handler(BaseHTTPRequestHandler):
                 return knowledge_store.library(repository)
             except (OSError, ValueError, sqlite3.Error) as exc:
                 raise RequestError(503, "本机工程知识库暂不可用，请检查文件及其权限") from exc
+        if path in {"/api/engineering-knowledge/assessment", "/api/engineering-knowledge/report.md"}:
+            context = self._engineering_knowledge_context(route)
+            run_id = query["analysis_id"][0]
+            try:
+                assessment = workflow.engineering_assessment(repository, run_id, context)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                raise RequestError(503, "本机工程推论暂不可用") from exc
+            if path.endswith(".md"):
+                if not assessment["findings"] and not assessment["notice"]:
+                    raise RequestError(404, "本次核查尚未录用知识片段")
+                latest = repository.analysis_by_id(run_id)
+                if latest is None:
+                    raise RequestError(404, "尚未生成核查报告")
+                result, _ = latest
+                base = markdown_report(result, str(result.get("ai_explanation", "")))
+                body = workflow.engineering_report(base, assessment)
+                return Download(body.encode("utf-8"), "BOM-engineering-report.md")
+            return assessment
         if path in {"/api/workflow/run", "/api/workflow/report.md"}:
             run_id = query.get("run_id", [""])[0]
             saved = workflow.get_run(repository, run_id)
@@ -478,7 +497,7 @@ class Handler(BaseHTTPRequestHandler):
         # a late file or malformed request from affecting a replacement batch.
         batch = None
         try:
-            if ppt or path in {"/api/engineering-knowledge/index", "/api/engineering-knowledge/references"}:
+            if ppt or path.startswith("/api/engineering-knowledge/"):
                 with self.state.import_lock:
                     self._engineering_knowledge_context(route)
             if path in IMPORT_POSTS:
@@ -603,6 +622,14 @@ class Handler(BaseHTTPRequestHandler):
             context = self._engineering_knowledge_context(route)
             return workflow.engineering_references(self.state.repository, context, payload.get("query", ""),
                                                    payload.get("section", ""))
+        if path == "/api/engineering-knowledge/assessment":
+            context = self._engineering_knowledge_context(route)
+            self.state.require_no_import()
+            run_id = parse_qs(route.query)["analysis_id"][0]
+            references = payload.get("references")
+            if not isinstance(references, list):
+                raise ValueError("请选择已审核片段")
+            return workflow.engineering_assessment(self.state.repository, run_id, context, references)
         if path in {"/api/engineering-knowledge/preview", "/api/engineering-knowledge/index"}:
             self._engineering_knowledge_context(route)
             if path.endswith("/preview"):

@@ -234,8 +234,14 @@ function setupEngineeringKnowledge(post, element) {
   const filter = $("#knowledge-filter");
   const question = $("#knowledge-query");
   const section = $("#knowledge-section");
+  const assessmentPanel = $("#engineering-assessment");
+  const assessmentBody = $("#engineering-assessment-body");
+  const reportAssessment = $("#engineering-report-assessment");
+  const clearAssessment = $("#engineering-assessment-clear");
+  const downloadReport = $("#engineering-report-download");
   let searchRevision = 0;
   let libraryRevision = 0;
+  let assessmentRevision = 0;
   function clearSearch() {
     searchRevision++;
     references.replaceChildren();
@@ -248,8 +254,83 @@ function setupEngineeringKnowledge(post, element) {
 
   const endpoint = (path, id) => "/api/engineering-knowledge" + path + "?analysis_id=" + encodeURIComponent(id);
 
+  function renderAssessment(data) {
+    const visible = Boolean(data?.findings.length || data?.notice);
+    for (const host of [assessmentBody, reportAssessment]) {
+      host.replaceChildren();
+      if (!visible) continue;
+      host.append(element("h2", data.title), element("p", "核查范围 · " + data.scope));
+      for (const fact of data.facts) host.append(element("p", "规则依据 · " + fact));
+      if (data.notice) host.append(element("p", data.notice));
+      for (const item of data.findings) {
+        const block = document.createElement("div");
+        block.className = "workflow-excerpt";
+        block.append(element("strong", "工程依据 · " + item.citation),
+          element("p", item.excerpt), element("p", "待复核 · " + item.review));
+        host.append(block);
+      }
+    }
+    for (const node of [assessmentPanel, reportAssessment, downloadReport]) node.classList.toggle("hidden", !visible);
+  }
+
+  function assessmentCurrent(id, revision, accountRevision) {
+    return revision === assessmentRevision && accountRevision === state.accountRevision
+      && state.result?.analysis_id === id && state.result?.engineering_knowledge_available;
+  }
+
+  async function updateAssessment(selected) {
+    const id = state.result?.analysis_id;
+    if (!id || !state.result.engineering_knowledge_available) return;
+    const revision = ++assessmentRevision;
+    const accountRevision = state.accountRevision;
+    const url = endpoint("/assessment", id);
+    if (!selected) renderAssessment();
+    try {
+      const data = selected ? await post(url, {references: selected}) : await api(url);
+      if (!assessmentCurrent(id, revision, accountRevision)) return;
+      renderAssessment(data);
+      if (selected) {
+        if (selected.length) {
+          assessmentPanel.scrollIntoView({block: "nearest"});
+          toast("已更新本次工程推论和报告");
+        } else {
+          toast("已移除本次知识引用");
+        }
+      }
+    } catch (error) {
+      if (assessmentCurrent(id, revision, accountRevision)) toast(error.message, true);
+    }
+  }
+
+  clearAssessment.addEventListener("click", () => updateAssessment([]));
+  downloadReport.addEventListener("click", async () => {
+    const id = state.result?.analysis_id;
+    const revision = assessmentRevision;
+    const accountRevision = state.accountRevision;
+    try {
+      const response = await accountFetch(endpoint("/report.md", id));
+      if (response.status === 403 && assessmentCurrent(id, revision, accountRevision)) {
+        reset();
+        return;
+      }
+      if (!response.ok) throw new Error("工程报告下载失败，请重新打开报告后再试");
+      const blob = await response.blob();
+      if (!assessmentCurrent(id, revision, accountRevision)) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "BOM-engineering-report.md";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      if (assessmentCurrent(id, revision, accountRevision)) toast(error.message, true);
+    }
+  });
+
   function reset() {
     libraryRevision++;
+    assessmentRevision++;
+    renderAssessment();
     activeId = "";
     clearSearch();
     question.value = "";
@@ -314,8 +395,14 @@ function setupEngineeringKnowledge(post, element) {
     showLibrary();
   }
 
-  document.addEventListener("bom-analysis-view", refresh);
-  document.addEventListener("bom-analysis-rendered", refresh);
+  function refreshAnalysis() {
+    refresh();
+    updateAssessment();
+  }
+
+  document.addEventListener("bom-analysis-view", refreshAnalysis);
+  document.addEventListener("bom-analysis-rendered", refreshAnalysis);
+  document.addEventListener("bom-report-view", () => updateAssessment());
   document.addEventListener("bom-snapshot-replaced", reset);
   document.addEventListener("bom-knowledge-denied", reset);
 
@@ -331,17 +418,37 @@ function setupEngineeringKnowledge(post, element) {
       const data = query || filter.value ? await post(url, {query, section: filter.value}) : await api(url);
       if (!isCurrent(id, revision) || request !== searchRevision) return;
       references.replaceChildren();
+      const choices = [];
+      const apply = element("button", "将选中片段用于本次推论和报告");
+      apply.className = "button secondary";
+      apply.type = "button";
+      apply.disabled = true;
       for (const hit of data.matches) {
         const block = element("div", "");
         block.className = "workflow-excerpt";
         const text = element("p", hit.text);
         text.className = "workflow-knowledge-text";
         const position = "第 " + hit.slide + (hit.kind === "text" ? " 段" : " 页") + " · 片段 " + hit.chunk;
-        block.append(element("strong", [hit.section_label, hit.title, hit.source_id, position].filter(Boolean).join(" · ")), text);
+        const label = element("label", [hit.section_label, hit.title, hit.source_id, position].filter(Boolean).join(" · "));
+        label.className = "workflow-check";
+        const choice = document.createElement("input");
+        choice.type = "checkbox";
+        choice.addEventListener("change", () => { apply.disabled = !choices.some(item => item.input.checked); });
+        choices.push({input: choice, reference: hit.reference});
+        label.prepend(choice);
+        block.append(label, text);
         references.append(block);
       }
-      if (!data.matches.length) references.textContent = data.status === "empty"
-        ? "当前范围还没有已审核材料。" : "本次没有检索到相关片段。";
+      if (choices.length) {
+        apply.addEventListener("click", async () => {
+          apply.disabled = true;
+          await updateAssessment(choices.filter(item => item.input.checked).map(item => item.reference));
+          apply.disabled = !choices.some(item => item.input.checked);
+        });
+        references.append(element("p", "选中适用于本次核查的片段，保存后会更新本次工程引用。"), apply);
+      } else {
+        references.textContent = data.status === "empty" ? "当前范围还没有已审核材料。" : "本次没有检索到相关片段。";
+      }
     } catch (error) {
       if (isCurrent(id, revision) && request === searchRevision) references.textContent = error.message;
     } finally {
@@ -431,6 +538,7 @@ function setupEngineeringKnowledge(post, element) {
       clearPreview();
       pptInput.value = "";
       showLibrary();
+      updateAssessment();
     } catch (error) {
       if (isCurrent(id, revision)) knowledgeStatus.textContent = error.message;
     } finally {

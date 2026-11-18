@@ -238,6 +238,7 @@ CREATE INDEX IF NOT EXISTS idx_change_log_created
 SCHEMA += PROCUREMENT_SCHEMA + ENGINEERING_SCHEMA + KNOWLEDGE_SCHEMA + WORKFLOW_SCHEMA
 
 DATA_TABLES = (
+    "engineering_assessments",
     "workflow_runs",
     "engineering_evidence",
     "procurement_records",

@@ -8,6 +8,7 @@ import sqlite3
 import unicodedata
 from collections import Counter
 from contextlib import closing, contextmanager
+from hashlib import sha256
 
 SECTIONS = {"standards": "工程规范", "changes": "变更案例", "validation": "验证与判定", "unfiled": "待归类"}
 METHOD = "local-sparse-cosine-v2"
@@ -64,6 +65,33 @@ def vector(text):
 
 def source_id(kind, digest):
     return ("PPT" if kind in {"ppt", "pptx"} else "TXT") + "-" + digest[:16].upper()
+
+
+def _reference(digest, kind, zone, title, unit, part, text):
+    # A re-reviewed fragment must be selected again if its content or scope changes.
+    revision = sha256(repr((kind, zone, title, text)).encode()).hexdigest()
+    return {"reference": f"{digest}:{unit}:{part}:{revision}", "source_id": source_id(kind, digest),
+            "kind": kind, "section": zone, "section_label": SECTIONS[zone], "title": title,
+            "slide": unit, "chunk": part, "text": text}
+
+
+def resolve_references(repository, references):
+    if not references:
+        return []
+    matches = []
+    with _store(repository) as db:
+        for reference in references:
+            digest, unit, part, _ = reference.split(":")
+            row = db.execute("""
+                SELECT d.digest,d.kind,d.section,d.title,c.unit,c.part,c.text
+                FROM chunks c JOIN documents d ON d.digest=c.digest
+                WHERE c.digest=? AND c.unit=? AND c.part=?
+            """, (digest, int(unit), int(part))).fetchone()
+            if row:
+                hit = _reference(*row)
+                if hit["reference"] == reference:
+                    matches.append(hit)
+    return matches
 
 
 def _insert_units(db, digest, units):
@@ -182,18 +210,15 @@ def retrieve(repository, query, section="", *, context_query=False):
                 GROUP BY c.id HAVING {threshold}
                 ORDER BY identifiers DESC,score DESC,d.digest,c.unit,c.part LIMIT 3"""
             for digest, kind, zone, title, unit, part, text, score, identifiers in db.execute(sql, bindings + params):
-                matches.append({"source_id": source_id(kind, digest), "kind": kind, "section": zone,
-                                "section_label": SECTIONS[zone], "title": title, "slide": unit,
-                                "chunk": part, "text": text, "score": round(score, 4), "matched_identifiers": identifiers})
+                matches.append({**_reference(digest, kind, zone, title, unit, part, text),
+                                "score": round(score, 4), "matched_identifiers": identifiers})
             if index is not None and not exact_only:
                 semantic = index.sync_and_search(db, query, section)
                 exact = [m for m in matches if m["matched_identifiers"]]
                 ranked = list(exact)
                 for (digest, kind, zone, title, unit, part, text), score in semantic:
-                    ranked.append({"source_id": source_id(kind, digest), "kind": kind, "section": zone,
-                                   "section_label": SECTIONS[zone], "title": title, "slide": unit,
-                                   "chunk": part, "text": text, "score": round(score, 4),
-                                   "matched_identifiers": 0})
+                    ranked.append({**_reference(digest, kind, zone, title, unit, part, text),
+                                   "score": round(score, 4), "matched_identifiers": 0})
                 seen = set()
                 combined = []
                 for hit in ranked + matches:

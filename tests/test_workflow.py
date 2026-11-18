@@ -121,8 +121,8 @@ class WorkflowTests(unittest.TestCase):
     def knowledge_url(self, run_id, action=""):
         return KNOWLEDGE + action + "?analysis_id=" + run_id
 
-    def index_document(self, run_id, text=REVIEWED):
-        parsed = self.request(self.knowledge_url(run_id, "/preview"), presentation())
+    def index_document(self, run_id, text=REVIEWED, *, deck=None):
+        parsed = self.request(self.knowledge_url(run_id, "/preview"), deck if deck is not None else presentation())
         self.assertEqual(parsed["page_count"], 2)
         self.assertEqual(parsed["excerpts"][0]["text"], "待人工删去的内容")
         self.assertEqual(parsed["excerpts"][1]["slide"], 2)
@@ -284,6 +284,10 @@ class WorkflowTests(unittest.TestCase):
         report_route = f"/api/report.md?analysis_id={engineer_run}"
         workflow_route = f"/api/workflow/report.md?run_id={engineer_run}"
         shared_report = self.request(report_route, method="GET")
+        assessment = self.knowledge_url(engineer_run, "/assessment")
+        engineering_report = self.knowledge_url(engineer_run, "/report.md")
+        hit = self.request(self.knowledge_url(engineer_run, "/references"), method="GET")["matches"][0]
+        self.request(assessment, {"references": [hit["reference"]]})
         self.assertTrue(self.request(workflow_route, method="GET").endswith(shared_report))
         for section in ("计划与备料影响", "制造执行影响", "分工与待办事项"):
             self.assertIn(section, shared_report)
@@ -312,6 +316,11 @@ class WorkflowTests(unittest.TestCase):
                 shared_workflow = self.request(workflow_route, method="GET")
                 self.assertTrue(shared_workflow.endswith(shared_report))
                 self.assertNotIn(REVIEWED, shared_workflow)
+                if role == "engineering":
+                    self.assertIn(REVIEWED, self.request(engineering_report, method="GET"))
+                else:
+                    self.request(assessment, method="GET", status=403)
+                    self.request(engineering_report, method="GET", status=403)
                 ungranted = "procurement" if role == "engineering" else "engineering"
                 self.request("/api/account/role", {"role": ungranted}, status=403)
                 self.preflight(role=ungranted, status=403)
@@ -384,6 +393,74 @@ class WorkflowTests(unittest.TestCase):
         dialogue = self.request("/api/workflow/dialogue", {"messages": [f"我是采购，{QUESTION}"]})
         self.assertEqual(dialogue["fields"]["role"], "planning")
         self.assertNotIn("role", [row["field"] for row in dialogue["rows"]])
+
+    def test_reviewed_fragments_supplement_engineering_result_and_private_report(self):
+        self.import_bom(engineering=True)
+        self.login_as("engineering", ("engineering", "procurement"))
+        self.switch("engineering")
+        run = self.run_review(self.preflight(role="engineering", draft=QUERY))
+        run_id = run["run_id"]
+        assessment_url = self.knowledge_url(run_id, "/assessment")
+        report_url = self.knowledge_url(run_id, "/report.md")
+        standard_url = "/api/report.md?analysis_id=" + run_id
+        before = self.request(standard_url, method="GET")
+        self.assertEqual(self.request(assessment_url, method="GET")["findings"], [])
+        self.request(report_url, method="GET", status=404)
+        deck = presentation()
+        document = self.index_document(run_id, "按采购行复核在途与未到货，避免重复计量。", deck=deck)
+        hit, = self.request(self.knowledge_url(run_id, "/references"), {"query": "在途未到货"})["matches"]
+        reference = hit["reference"]
+        self.request(assessment_url, {"references": [reference, reference]}, status=400)
+        self.request(assessment_url, {"references": [reference[:-64] + "0" * 64]}, status=400)
+        self.assertEqual(self.request(assessment_url, method="GET")["findings"], [])
+        saved = self.request(assessment_url, {"references": [reference]})
+        self.assertEqual(saved, self.request(assessment_url, method="GET"))
+        self.assertEqual(saved["facts"], run["answer"]["facts"][:2])
+        self.assertIn("ENG-V2", saved["scope"])
+        finding, = saved["findings"]
+        self.assertEqual(finding["excerpt"], hit["text"])
+        self.assertIn(document["source_id"], finding["citation"])
+        self.assertIn("去重", finding["review"])
+        private = self.request(report_url, method="GET")
+        self.assertTrue(private.startswith(before.rstrip()))
+        for value in (saved["title"], saved["scope"], finding["citation"], finding["excerpt"], finding["review"]):
+            self.assertIn(value, private)
+        self.assertEqual(self.request(standard_url, method="GET"), before)
+        self.assertEqual(self.request("/api/workflow/run?run_id=" + run_id, method="GET"), run)
+
+        self.switch("procurement")
+        for route, method in ((assessment_url, "GET"), (assessment_url, "POST"), (report_url, "GET")):
+            self.request(route, method=method, status=403)
+        self.login_as("procurement")
+        self.request("/api/account/role", {"role": "engineering"}, status=403)
+        self.request(report_url, method="GET", status=403)
+        self.assertEqual(self.request(standard_url, method="GET"), before)
+        self.login_as("procurement", ("procurement", "engineering"))
+        self.switch("engineering")
+        self.assertFalse(self.request("/api/analysis/by-id?analysis_id=" + run_id, method="GET")
+                         ["result"]["engineering_knowledge_available"])
+        self.request(assessment_url, method="GET", status=403)
+        self.request(assessment_url, {"references": [reference]}, status=403)
+        self.request(report_url, method="GET", status=403)
+        self.token = ""
+        self.request(report_url, method="GET", status=403)
+
+        self.login_as("engineering")
+        second = self.engineering_run()
+        self.assertNotEqual(run_id, second)
+        self.assertEqual(self.request(self.knowledge_url(second, "/assessment"), method="GET")["findings"], [])
+        preview = self.request(self.knowledge_url(run_id, "/preview"), deck)
+        self.request(self.knowledge_url(run_id, "/index"), {
+            **{key: preview[key] for key in ("digest", "slides", "page_count", "review_token")},
+            "approved": True, "excerpts": [{"slide": 1, "text": "修订后的工程条件"}],
+        })
+        revised = self.request(assessment_url, method="GET")
+        self.assertEqual(revised["findings"], [])
+        self.assertIn("重新选择", revised["notice"])
+        self.assertNotIn(finding["excerpt"], self.request(report_url, method="GET"))
+        self.request(assessment_url, {"references": [reference]}, status=400)
+        self.assertEqual(self.request(assessment_url, {"references": []})["notice"], "")
+        self.request(report_url, method="GET", status=404)
 
     def test_provisioning_never_writes_to_the_business_database(self):
         db = self.state.repository.database_path

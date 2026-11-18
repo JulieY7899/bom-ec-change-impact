@@ -605,6 +605,10 @@
             <div id="tab-warnings" class="tab-panel"></div>
           </article>
           </div>
+          <article class="panel workflow-panel hidden" id="engineering-assessment">
+            <div id="engineering-assessment-body"></div>
+            <button class="button secondary" type="button" id="engineering-assessment-clear">移除本次知识引用</button>
+          </article>
         </div>
       </section>
 
@@ -619,16 +623,18 @@
             <div><p class="kicker">核查报告</p><h2>工程变更影响核查报告</h2><p>报告根据当前核查结果生成；保留业务编号，敏感名称统一显示为 XXX。</p></div>
             <div class="action-row">
               <a class="button primary" id="report-download" href="/api/report.md" download>下载报告（Markdown）</a>
+              <button class="button secondary hidden" type="button" id="engineering-report-download">下载含工程推论的报告</button>
             </div>
           </div>
           <article class="report-paper" id="report-content"></article>
+          <article class="report-paper hidden" id="engineering-report-assessment"></article>
         </div>
       </section>
     </main>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="/app.js?v=snapshot-reliability"></script>
-  <script src="/workflow.js?v=department-intent"></script>
+  <script src="/app.js?v=engineering-assessment"></script>
+  <script src="/workflow.js?v=engineering-assessment"></script>
 </body>
 </html>
