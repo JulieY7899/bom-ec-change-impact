@@ -280,6 +280,14 @@ class WorkflowTests(unittest.TestCase):
         self.login_as("engineering")
         engineer_run = self.engineering_run()
         self.index_document(engineer_run)
+        analysis_route = f"/api/analysis/by-id?analysis_id={engineer_run}"
+        report_route = f"/api/report.md?analysis_id={engineer_run}"
+        workflow_route = f"/api/workflow/report.md?run_id={engineer_run}"
+        shared_report = self.request(report_route, method="GET")
+        self.assertTrue(self.request(workflow_route, method="GET").endswith(shared_report))
+        for section in ("计划与备料影响", "制造执行影响", "分工与待办事项"):
+            self.assertIn(section, shared_report)
+        self.assertNotIn(REVIEWED, shared_report)
         cases = {
             "engineering": ("工程", "bom", "上溯路径"),
             "rd": ("研发", "bom", "上溯路径"),
@@ -297,6 +305,13 @@ class WorkflowTests(unittest.TestCase):
                 identity = self.request("/api/account", method="GET")["identity"]
                 self.assertEqual((identity["department"], identity["active_role"], identity["roles"]),
                                  (role, role, [role]))
+                other_role_analysis = self.request(analysis_route, method="GET")
+                self.assertEqual(other_role_analysis["result"]["analysis_id"], engineer_run)
+                self.assertEqual(other_role_analysis["report"], shared_report)
+                self.assertEqual(self.request(report_route, method="GET"), shared_report)
+                shared_workflow = self.request(workflow_route, method="GET")
+                self.assertTrue(shared_workflow.endswith(shared_report))
+                self.assertNotIn(REVIEWED, shared_workflow)
                 ungranted = "procurement" if role == "engineering" else "engineering"
                 self.request("/api/account/role", {"role": ungranted}, status=403)
                 self.preflight(role=ungranted, status=403)
