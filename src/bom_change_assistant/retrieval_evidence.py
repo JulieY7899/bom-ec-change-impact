@@ -125,6 +125,27 @@ LEAKAGE_BOUND = re.compile(
     rf"(?:最大(?:允许)?泄漏率|泄漏率(?:的)?(?:上限|限值|不得超过|不大于|至多|[≤<]))"
     rf"\s*(?:为|是|[:：])?\s*{NUMBER}"
 )
+# Use metric-specific units and comparators so observed values and opposite limits
+# cannot satisfy an explicit request for a formal bound.
+MEASURE_UNITS = (
+    (r"压力保持率|保压保持率", r"%|百分比"),
+    (r"脱开力|拔出力|拉脱力", r"n|牛顿?"),
+    (r"同轴度", r"mm|毫米"),
+    (r"响应(?:时间|时长)?", r"ms|毫秒|s|秒"),
+    (r"(?:光源)?亮度", r"%|cd/m²|cd/m2"),
+)
+LOWER_LIMIT = r"下限|最低(?:允许)?|最小(?:允许)?|不(?:得|能)?低于|至少|不小于|≥|>="
+UPPER_LIMIT = r"上限|最高(?:允许)?|最大(?:允许)?|最多(?:允许)?|不(?:得|能)?(?:超过|高于)|至多|不大于|≤|<="
+NEUTRAL_LIMIT = r"限值|公差|合格界限|合格线|验收标准"
+LIMIT_AUTHORITY = re.compile(r"已(?:发布|签发|生效)|现行版|检验规范|(?:验收|放行)(?:条件|标准)|合格界限|条款规定")
+LIMIT_NOT_EFFECTIVE = re.compile(r"已停用|征求意见|待(?:评审|审定)|未(?:批准|生效|设|规定)|仅供|不(?:适用|作为)|草案")
+LIMIT_OBSERVATION = re.compile(r"实测|记录值|实测均值|原始读数|量程|控制目标|调试目标|试设")
+LIMIT_CONDITIONS = (
+    r"热老化(?:后)?|老化后", r"暖机(?:后)?", r"冷启动", r"常温|室温", r"低温",
+    r"干态", r"湿态",
+)
+LIMIT_STATISTICS = (r"平均(?:值)?|均值", r"单次|每次|各次")
+CELSIUS = re.compile(r"(?<![0-9.])[+−-]?[0-9]+(?:\.[0-9]+)?\s*°\s*c")
 ORDER_LINE = r"订单行|订单逐行|订单按行|订单每行|订单的.{0,8}行|(?:销售|客户)订单[^。！？；\n]{0,24}(?:逐行|各行|每行|分行)"
 OPEN_ORDER = r"(?:开放|未关闭|未完结)(?:的)?(?:销售)?订单行"
 ORDER_REVIEW = r"评审|复核|核查"
@@ -275,6 +296,59 @@ def _decision_requirements(query, references):
     return checks
 
 
+def _quantitative_requirement(query):
+    direction = [marker for marker in (LOWER_LIMIT, UPPER_LIMIT) if re.search(marker, query)]
+    if not direction and not re.search(NEUTRAL_LIMIT, query):
+        return None
+    measures = [(metric, unit) for metric, unit in MEASURE_UNITS if re.search(metric, query)]
+    if not measures:
+        return None
+    comparator = "|".join(direction or (LOWER_LIMIT, UPPER_LIMIT, NEUTRAL_LIMIT))
+    conditions = [condition for condition in LIMIT_CONDITIONS if re.search(condition, query)]
+    statistics = [statistic for statistic in LIMIT_STATISTICS if re.search(statistic, query)]
+    temperatures = {re.sub(r"\s+", "", value).replace("−", "-") for value in CELSIUS.findall(query)}
+    references = set(PART_CODE.findall(query)) | set(VERSION.findall(query))
+
+    after = r"\s*(?:为|是|定为|[:：])?\s*"
+    bounds = [
+        re.compile(
+            rf"(?:(?:{metric})(?:的)?(?:合格界限为|应|必须)?\s*(?:{comparator})|"
+            rf"(?:{comparator})\s*(?:{metric})){after}[+−-]?{NUMBER}\s*(?:{unit})(?![a-z])"
+        )
+        for metric, unit in measures
+    ]
+
+    def qualifies(sentences):
+        for index, clause in enumerate(sentences):
+            if not any(bound.search(clause) for bound in bounds):
+                continue
+            if LIMIT_NOT_EFFECTIVE.search(clause) or LIMIT_OBSERVATION.search(clause):
+                continue
+            if statistics and not any(re.search(statistic, clause) for statistic in statistics):
+                continue
+            governing = [clause]
+            for previous in reversed(sentences[max(index - 2, 0):index]):
+                if LIMIT_NOT_EFFECTIVE.search(previous) or LIMIT_OBSERVATION.search(previous):
+                    break
+                governing.append(previous)
+                if LIMIT_AUTHORITY.search(previous):
+                    break
+            scope = " ".join(governing)
+            if not LIMIT_AUTHORITY.search(scope):
+                continue
+            if not references.issubset(set(PART_CODE.findall(scope)) | set(VERSION.findall(scope))):
+                continue
+            if conditions and not any(re.search(condition, scope) for condition in conditions):
+                continue
+            actual = {re.sub(r"\s+", "", value).replace("−", "-") for value in CELSIUS.findall(scope)}
+            if temperatures and temperatures.isdisjoint(actual):
+                continue
+            return True
+        return False
+
+    return qualifies
+
+
 def _formal_requirements(query):
     references = set(PART_CODE.findall(query))
     checks = _decision_requirements(query, references)
@@ -401,6 +475,10 @@ def evidence_requirement(query):
     formal = _formal_requirements(query)
     context = _context_requirements(query)
     asks_limit = bool(LIMIT_REQUEST.search(query) or GRAVITY_LIMIT_REQUEST.search(query))
+    quantitative = _quantitative_requirement(query)
+    if quantitative:
+        formal.append(quantitative)
+        asks_limit = False
     if re.search(LEAKAGE_RATE, query) and not RESISTANCE_NAME.search(query):
         # The metric-specific check binds the number to the requested measurement.
         asks_limit = False
