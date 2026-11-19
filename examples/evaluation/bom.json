@@ -1,0 +1,124 @@
+{
+  "change": {
+    "analysis_mode": "engineering", "bom_version": "BOM-000001",
+    "product": "FG-700", "plant": "EAST", "engineering_version": "V2",
+    "target_bom_row": "L20", "change_type": "replace",
+    "old_component": "MAT-101", "new_component": "MAT-901", "effective_date": "2026-12-10"
+  },
+  "cases": [
+    {
+      "id": "BOM-01",
+      "rule": "同一旧料同时出现在 V1 与 V2。只评审引用 V2 目标行的订单，V1 排除，缺版本待核。",
+      "records": [
+        {"engineering_record": "VERSION", "engineering_version": "V1"},
+        {"engineering_record": "BOM_ROW", "engineering_version": "V1", "row_id": "L20"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-V1", "engineering_version": "V1"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-V2"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-V2", "row_application": "APPLIES"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-UNKNOWN", "engineering_version": ""}
+      ],
+      "expected": {
+        "path": ["L20"],
+        "orders": {"SO-V1/00010": "排除其他版本", "SO-V2/00010": "待业务评审", "SO-UNKNOWN/00010": "版本引用待核"},
+        "candidates": ["SO-V2/00010"],
+        "reasons": {"SO-UNKNOWN/00010": "缺少工程版本引用"}
+      }
+    },
+    {
+      "id": "BOM-02",
+      "rule": "同一张销售订单两个订单行都引用 V2。00010 使用目标行，00020 仅使用同料的另一行 L10。",
+      "records": [
+        {"engineering_record": "BOM_ROW", "row_id": "L10"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-SPLIT", "order_item": "00010"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-SPLIT", "order_item": "00020"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-SPLIT", "order_item": "00010", "row_application": "APPLIES"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-SPLIT", "order_item": "00020", "row_application": "EXCLUDED"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-SPLIT", "order_item": "00020", "row_id": "L10", "row_application": "APPLIES"}
+      ],
+      "expected": {
+        "path": ["L20"],
+        "orders": {"SO-SPLIT/00010": "待业务评审", "SO-SPLIT/00020": "排除行影响"},
+        "candidates": ["SO-SPLIT/00010"],
+        "reasons": {"SO-SPLIT/00020": "订单配置排除此行"}
+      }
+    },
+    {
+      "id": "BOM-03",
+      "rule": "两条记录对同一订单行与同一目标 BOM 行给出相反配置。保留版本引用，配置冲突待核。",
+      "records": [
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-CONFLICT"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-CONFLICT", "row_application": "APPLIES"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-CONFLICT", "row_application": "EXCLUDED"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-NOROW"}
+      ],
+      "expected": {
+        "path": ["L20"],
+        "orders": {"SO-CONFLICT/00010": "待核对", "SO-NOROW/00010": "待核对"},
+        "candidates": [],
+        "reasons": {"SO-CONFLICT/00010": "订单行适用性证据冲突", "SO-NOROW/00010": "订单行适用性待核"}
+      }
+    },
+    {
+      "id": "BOM-04",
+      "rule": "成品、版本与 BOM 行号相同，工厂不同。西区订单不得进入东区的行影响。",
+      "records": [
+        {"engineering_record": "VERSION", "plant": "WEST"},
+        {"engineering_record": "BOM_ROW", "plant": "WEST"},
+        {"engineering_record": "ORDER_REFERENCE", "plant": "WEST", "order_id": "SO-WEST"},
+        {"engineering_record": "ORDER_ROW", "plant": "WEST", "order_id": "SO-WEST", "row_application": "APPLIES"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-EAST"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-EAST", "row_application": "APPLIES"}
+      ],
+      "expected": {
+        "path": ["L20"],
+        "orders": {"SO-WEST/00010": "排除其他版本", "SO-EAST/00010": "待业务评审"},
+        "candidates": ["SO-EAST/00010"],
+        "reasons": {"SO-WEST/00010": "引用其他工程版本范围"}
+      }
+    },
+    {
+      "id": "BOM-05",
+      "rule": "目标行有效，但整个上层路径在拟生效日已失效，不能出具订单行影响。",
+      "target_row": {"parent": "SUB-700", "parent_row_id": "UP1"},
+      "records": [
+        {"engineering_record": "BOM_ROW", "row_id": "UP1", "component": "SUB-700", "valid_to": "2026-12-09"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-PATH"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-PATH", "row_application": "APPLIES"}
+      ],
+      "expected": {"path": [], "path_issue": "BOM 行或上层路径在该日未生效", "orders": {}, "candidates": [], "reasons": {}}
+    },
+    {
+      "id": "BOM-06",
+      "rule": "拟生效日是上层路径的最后有效日，仍需核查。订单日期早于拟生效日，交由业务核对实际执行。",
+      "target_row": {"parent": "SUB-700", "parent_row_id": "UP1"},
+      "records": [
+        {"engineering_record": "BOM_ROW", "row_id": "UP1", "component": "SUB-700", "valid_to": "2026-12-10"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-EARLY", "order_relevant_date": "2026-12-09"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-EARLY", "row_application": "APPLIES"}
+      ],
+      "expected": {
+        "path": ["UP1", "L20"],
+        "orders": {"SO-EARLY/00010": "待核对"},
+        "candidates": ["SO-EARLY/00010"],
+        "reasons": {"SO-EARLY/00010": "订单日期早于拟生效日，请核对实际执行"}
+      }
+    },
+    {
+      "id": "BOM-07",
+      "rule": "订单已到货时由工程、采购、计划共同评审。已关闭订单只保留引用证据。",
+      "records": [
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-RECEIVED", "purchased": "是", "received": "是"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-RECEIVED", "row_application": "APPLIES"},
+        {"engineering_record": "ORDER_REFERENCE", "order_id": "SO-CLOSED", "order_status": "已关闭"},
+        {"engineering_record": "ORDER_ROW", "order_id": "SO-CLOSED", "row_application": "APPLIES"}
+      ],
+      "expected": {
+        "path": ["L20"],
+        "orders": {"SO-RECEIVED/00010": "待业务评审", "SO-CLOSED/00010": "仅保留引用证据"},
+        "candidates": ["SO-RECEIVED/00010"],
+        "reasons": {"SO-CLOSED/00010": "订单已终止"},
+        "owners": {"SO-RECEIVED/00010": ["工程", "采购", "计划"]}
+      }
+    }
+  ]
+}

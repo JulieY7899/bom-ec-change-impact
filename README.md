@@ -115,6 +115,8 @@ python3 scripts/check_public_files.py
 
 测试覆盖采购对账、多层追溯、订单关联、日期边界、用量完整性、批次隔离、报告和本地 HTTP 接口。使用本机中文模型的测试命令见工程知识库配置说明。当前运行结果见 [GitHub Actions](https://github.com/JulieY7899/bom-ec-change-impact/actions/workflows/verify.yml)。
 
+工程版本、订单行业务场景和工程知识检索可使用 [BOM 与检索评测集](docs/evaluation-bom-retrieval.md) 单独复跑。
+
 ## 最近修复
 
 - **生产订单状态**：按完整 SAP 状态码归类。`PCNF` 和 `REL PCNF` 属于「已释放/执行中」，订单数量为空时仍纳入核查和风险计数。
