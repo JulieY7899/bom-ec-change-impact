@@ -6,6 +6,7 @@ import html
 import http.client
 import io
 import json
+import os
 import secrets
 import sqlite3
 import tempfile
@@ -714,6 +715,146 @@ class WorkflowTests(unittest.TestCase):
         found = self.request(self.knowledge_url(run_id, "/references"), method="GET")
         self.assertEqual(found["status"], "no_match")
         self.assertEqual(found["matches"], [])
+
+    def test_explicit_search_requires_scope_and_requested_values(self):
+        self.login_as("engineering")
+        self.import_bom()
+        run_id = self.engineering_run()
+        negatives = [
+            "北厂 V4 L73 使用 PART-403。东厂 V5 L74 使用同料。东厂 V4 L72 换料须评审。",
+            "PART-403 绝缘电阻需要测量。PART-403 接地电阻大于 20 MΩ。",
+            "PART-403 绝缘电阻下限 20 mΩ。PART-404 绝缘电阻下限 20 MΩ。",
+            "撤单赔偿金额为 800 元，合同编号待补。",
+            "合同号 CT-53。采购承诺已登记，具体撤单赔偿金额待确认。",
+            "振动筛查需保留最大加速度记录。试验砝码不得超过 8 g。",
+            "振动筛查的加速度上限为 18 m/s²。运输跌落加速度上限为 6 g。",
+        ]
+        checks = [
+            ("东厂 V4 L73 使用 PART-403 如何换料？", "东厂 V4 L73 使用 PART-403，换料前核对订单状态。"),
+            ("PART-403 绝缘电阻合格阈值是多少兆欧？", "PART-403 绝缘电阻合格标准为至少 45 MΩ。"),
+            ("采购承诺的撤单赔偿金额和合同号", "未交采购承诺对应合同号 CT-71，撤单赔偿金额为 1,200 元。"),
+            ("振动筛查容许几倍重力加速度？", "振动筛查的峰值加速度不得超过 3.5 g。"),
+        ]
+
+        def approve(paragraphs):
+            source = "\n\n".join(paragraphs).encode()
+            preview = self.request(self.knowledge_url(run_id, "/preview") + "&kind=text", source)
+            self.request(self.knowledge_url(run_id, "/index"), {**preview, "approved": True, "section": "validation"})
+
+        def search(query):
+            return self.request(self.knowledge_url(run_id, "/references"), {"query": query, "section": "validation"})
+
+        approve(negatives)
+        for query, _ in checks:
+            with self.subTest(query=query, evidence="insufficient"):
+                response = search(query)
+                self.assertEqual((response["status"], response["matches"]), ("no_match", []))
+
+        approve([excerpt for _, excerpt in checks])
+        for query, excerpt in checks:
+            with self.subTest(query=query, evidence="sufficient"):
+                self.assertEqual([hit["text"] for hit in search(query)["matches"]], [excerpt])
+
+    def test_spoken_queries_find_approved_evidence_in_the_selected_partition(self):
+        self.login_as("engineering")
+        self.import_bom()
+        run_id = self.engineering_run()
+        checks = [
+            ("送到仓库后有一批退给供应商，实际入库怎么算？",
+             "累计净到货量依据收货数量扣除退货，再按有效冲销记录复核。"),
+            ("工单已经开工，要不要返工前先看什么？",
+             "在制工单先核对实际领料、投料和当前工序，再评估是否隔离。"),
+        ]
+        source = "\n\n".join(excerpt for _, excerpt in checks).encode()
+        preview = self.request(self.knowledge_url(run_id, "/preview") + "&kind=text", source)
+        self.request(self.knowledge_url(run_id, "/index"), {**preview, "approved": True, "section": "standards"})
+        route = self.knowledge_url(run_id, "/references")
+        references = []
+        for query, excerpt in checks:
+            with self.subTest(query=query):
+                result = self.request(route, {"query": query, "section": "standards"})
+                self.assertEqual(result["matches"][0]["text"], excerpt)
+                references.append(result["matches"][0]["reference"])
+                self.assertEqual(self.request(route, {"query": query, "section": "changes"})["matches"], [])
+                self.assertEqual(self.request(route, {"query": f"MAT-913 {query}"})["matches"], [])
+
+        unrelated = self.request(route, {"query": "网购商品退回来，运费由谁出？"})
+        self.assertEqual((unrelated["status"], unrelated["matches"]), ("no_match", []))
+        assessment = self.knowledge_url(run_id, "/assessment")
+        self.assertEqual(self.request(assessment, method="GET")["findings"], [])
+        self.request(assessment, {"references": references[:1]})
+        report = self.request(self.knowledge_url(run_id, "/report.md"), method="GET")
+        self.assertIn(checks[0][1], report)
+        self.assertNotIn(checks[1][1], report)
+
+    def test_explicit_procedure_and_record_queries_require_matching_evidence(self):
+        self.login_as("engineering")
+        self.import_bom()
+        run_id = self.engineering_run()
+        route = self.knowledge_url(run_id, "/references")
+        checks = (
+            ("validation", "在途量和未到货量怎样去重？",
+             "在运数量和未到货量须按采购行比对，覆盖范围重叠时只登记一次。"),
+            ("standards", "这笔未交货采购承诺可按哪份发票冲抵，金额是多少？",
+             "未交货采购承诺按发票号 FP-294 冲抵 480 元，并核对采购行。"),
+            ("changes", "已批准的切换日期和会签在哪里看？",
+             "改线切换已批准，切换日期定于 2027-02-14 08:30。工程会签见签核单 SW-241 第 4 页。"),
+        )
+
+        def approve(section, *paragraphs):
+            source = "\n\n".join(paragraphs).encode()
+            preview = self.request(self.knowledge_url(run_id, "/preview") + "&kind=text", source)
+            self.request(self.knowledge_url(run_id, "/index"), {**preview, "approved": True, "section": section})
+
+        standards_procedure = "同一采购行的在途量与未到货量不得重复计入，以正式收货凭证逐笔对照。"
+        approve("standards", standards_procedure,
+                "未交货采购承诺必须按订单行查余额。发票号 FP-117 的总金额为 480 元。",
+                "未交货采购承诺不得用发票号 FP-109 冲抵 480 元。",
+                "未交货采购承诺核对发票号 FP-205 合计 480 元，冲抵金额待补。",
+                "设备维修费用按发票号 FP-103 冲抵 480 元。")
+        approve("validation", "待检库存由质量签发放行单，放行后重新计算仓位可用量。",
+                "在途量和未到货量另行记录。验证工单不得重复签发。",
+                "在途量和未到货量如何防止重复？")
+        approve("changes", "切换日期须核对上下层清单和生效窗口，审批通过后在第 2 页签字。",
+                "切换已批准，切换日期为 2027-02-12，签字待补，签字位置在第 2 页。",
+                "审批样例中的切换已批准，切换日期为 2027-02-13。签字见审批单 EX-141 第 2 页。",
+                "若审批通过，切换日期定于 2027-02-16，签字见审批单 EX-142 第 2 页。",
+                "切换审批状态：通过。切换日期：2027-02-15。会签人：待填写。")
+        signed_form = "切换审批状态：通过。切换日期：2027-02-21。会签人：工程值班岗。"
+
+        modes = [("keyword", None)]
+        if model := os.environ.get("BOM_TEST_MODEL"):
+            from bom_change_assistant.semantic_index import SemanticIndex
+            modes.append(("bge", SemanticIndex(self.root / "records.qdrant", model)))
+        for sufficient in (False, True):
+            if sufficient:
+                for section, _, excerpt in checks:
+                    approve(section, excerpt)
+                approve("changes", signed_form)
+            for mode, index in modes:
+                with self.subTest(mode=mode, sufficient=sufficient), patch.object(
+                    self.state.repository, "semantic_index", index, create=True
+                ):
+                    report_hit = None
+                    for section, question, excerpt in checks:
+                        result = self.request(route, {"query": question, "section": section})
+                        self.assertEqual(result["status"], "retrieved" if sufficient else "no_match", question)
+                        expected = [excerpt] if sufficient else []
+                        if sufficient and section == "changes":
+                            expected.append(signed_form)
+                        self.assertCountEqual([hit["text"] for hit in result["matches"]], expected, question)
+                        if sufficient and section == "changes":
+                            report_hit = next(hit for hit in result["matches"] if hit["text"] == excerpt)
+                    policy = self.request(route, {"query": checks[0][1], "section": "standards"})
+                    self.assertEqual([hit["text"] for hit in policy["matches"]], [standards_procedure])
+                    if report_hit:
+                        self.assertFalse(self.request(self.knowledge_url(run_id, "/assessment"),
+                                                      method="GET")["findings"])
+                        self.request(self.knowledge_url(run_id, "/assessment"), {"references": [report_hit["reference"]]})
+                        report = self.request(self.knowledge_url(run_id, "/report.md"), method="GET")
+                        self.assertIn(report_hit["text"], report)
+                        self.assertNotIn("EX-141", report)
+                        self.request(self.knowledge_url(run_id, "/assessment"), {"references": []})
 
     def test_ordinary_role_facts_use_the_existing_rule_result(self):
         self.request("/api/demo")

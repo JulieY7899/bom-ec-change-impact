@@ -436,7 +436,8 @@ function setupEngineeringKnowledge(post, element) {
           await updateAssessment(choices.filter(item => item.input.checked).map(item => item.reference));
           apply.disabled = !choices.some(item => item.input.checked);
         });
-        references.append(element("p", "选中适用于本次核查的片段，保存后会更新本次工程引用。"), apply);
+        references.prepend(element("p", "以下是候选片段。请核对适用范围，再选入本次工程引用。"));
+        references.append(apply);
       } else {
         references.textContent = data.status === "empty" ? "当前范围还没有已审核材料。" : "本次没有检索到相关片段。";
       }
