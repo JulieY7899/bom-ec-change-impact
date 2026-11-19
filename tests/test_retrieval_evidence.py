@@ -49,3 +49,46 @@ class FormalEvidenceTests(unittest.TestCase):
                 self.assertTrue(qualifies(positive), positive)
                 for negative in negatives:
                     self.assertFalse(qualifies(negative), negative)
+
+
+class ContextEvidenceTests(unittest.TestCase):
+    def test_explicit_context_questions_require_matching_dates_balances_and_clauses(self):
+        cases = (
+            (
+                "找 ST-27 在 2031 年 8 月 11 日当天有效的装配记录。",
+                "装配位号 ST-27 的旧行在 2031 年 8 月 7 日至 2031 年 8 月 11 日有效。",
+                (
+                    "装配位号 ST-27 的旧行在 2031 年 8 月 7 日至 2031 年 8 月 10 日有效。",
+                    "装配位号 ST-29 的新行从 2031-08-10 开始有效，ST-27 状态待核。",
+                    "装配位号 ST-27 从 2031-08-30 开始有效。",
+                    "装配位号 ST-27 从 2031-08-07 开始有效，到 2031-08-10 截止。",
+                ),
+            ),
+            (
+                "有未到货余额核实为零件的采购证据吗？",
+                "采购行 PO-300 核对收货凭证后，未到货余量已确认是 0 件。",
+                ("本次尚未匹配采购依据。", "净收 0 件，未到货 40 件。",
+                 "示例中未到货余量为 0 件。", "未到货余量为 10 件。"),
+            ),
+            (
+                "解除采购承诺要付多少违约金？要合同条款号和金额。",
+                "合同第 8 条明确解除采购承诺的违约金为 300 元。",
+                (
+                    "合同第 8 条登记采购总额 300 元，解除是否赔偿待批准。",
+                    "采购承诺拟解除。合同第 8 条未找到，合同附件待补。",
+                    "解除采购承诺违约金为 300 元。另一个采购合同第 8 条留存了记录。",
+                ),
+            ),
+            (
+                "采购缺了哪些凭证，要找谁补核？",
+                "采购核查补数要求采购订单行和到货凭证，并由采购与仓库分工提供。",
+                ("工单实收字段用于制造核查。", "采购行的到货凭证已入库，另有冲销记录。"),
+            ),
+        )
+        for query, positive, negatives in cases:
+            with self.subTest(query=query):
+                qualifies = evidence_requirement(query)
+                self.assertIsNotNone(qualifies)
+                self.assertTrue(qualifies(positive), positive)
+                for negative in negatives:
+                    self.assertFalse(qualifies(negative), negative)

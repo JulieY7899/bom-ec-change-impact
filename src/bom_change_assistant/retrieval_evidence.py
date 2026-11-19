@@ -1,6 +1,7 @@
 """Evidence required by explicit engineering searches before relevance ranking."""
 import re
 import unicodedata
+from datetime import date
 
 CODE = r"[a-z0-9]+(?:[-_.][a-z0-9]+)*"
 CODE_START = r"(?<![a-z0-9._-])"
@@ -24,12 +25,16 @@ LIMIT_VALUE = (
     r"(?:合格|验收|判定)(?:标准|线)|不[得能]?超过|大于等于|小于等于|大于|小于|[≤≥]|[<>]=?)\s*(?:为|是|[:：])?\s*"
 )
 SENTENCE = re.compile(r"[。！？；!?;\n]")
-CONTRACT_REQUEST = re.compile(r"合同(?:编号|号)")
+CONTRACT_REQUEST = re.compile(r"合同(?:编号|号|条款(?:编号|号)?)")
 CONTRACT_VALUE = re.compile(
-    rf"合同(?:编号|号)\s*(?:为|是|[:：#])?\s*(?=[a-z0-9._-]*[0-9]){CODE}{CODE_END}"
+    rf"合同(?:编号|号|条款(?:编号|号)?)\s*(?:为|是|[:：#])?\s*(?=[a-z0-9._-]*[0-9]){CODE}{CODE_END}"
 )
-CANCELLATION = r"(?:取消|撤单|终止)[^。！？；!?;\n]{0,20}(?:赔偿|赔付|补偿|违约金)"
-CANCELLATION_REQUEST = re.compile(CANCELLATION + r"[^。！？；!?;\n]{0,8}(?:金额|多少|费用)")
+CONTRACT_CLAUSE = re.compile(r"合同\s*第\s*[0-9一二三四五六七八九十]+(?:[.．][0-9]+)*\s*条")
+CANCELLATION = r"(?:取消|撤销|撤单|终止|解除)[^。！？；!?;\n]{0,20}(?:赔偿|赔付|补偿|违约金)"
+CANCELLATION_REQUEST = re.compile(
+    CANCELLATION + r"[^。！？；!?;\n]{0,16}(?:金额|多少|费用)"
+    r"|(?:取消|撤销|撤单|终止|解除).{0,20}(?:多少|需付).{0,6}(?:赔偿|赔付|补偿|违约金)"
+)
 MONEY = rf"(?:[¥￥]\s*{NUMBER}|{NUMBER}\s*(?:元|万(?:元)?|人民币|美元|欧元|cny|rmb|usd|eur))"
 CANCELLATION_VALUE = re.compile(
     CANCELLATION + rf"[^。！？；!?;\n\d¥￥]{{0,12}}{MONEY}"
@@ -116,6 +121,22 @@ EARLY_DEMAND = rf"需求(?:日期|日)(?:早于{CHANGE_DATE}|先于{CHANGE_DATE}
 STOCK_CATEGORIES = re.compile(r"待检|冻结|寄售")
 STOCK_RULE = re.compile(r"并入|计入|纳入|扣除|排除|算入|不算|不(?:可|能)用|方可使用")
 
+FULL_DATE = r"20[0-9]{2}\s*(?:年|[-/.])\s*[0-9]{1,2}\s*(?:月|[-/.])\s*[0-9]{1,2}(?:\s*日)?(?![0-9])"
+DATED_WINDOW = re.compile(rf"({FULL_DATE})\s*(?:至|到|~|—|–|－)\s*({FULL_DATE})")
+EFFECTIVE_START = re.compile(rf"(?:从|自)\s*({FULL_DATE})\s*(?:起|开始)?\s*(?:有效|生效)")
+EFFECTIVE_END = re.compile(rf"(?:至|到|截止于?|有效期至)\s*({FULL_DATE})(?:\s*(?:截止|结束|为止))?")
+EFFECTIVE_DAY = re.compile(rf"({FULL_DATE})\s*(?:当天|当日)\s*(?:仍)?有效")
+DATED_EVIDENCE_REQUEST = re.compile(r"(?:当天|当日)(?:仍)?有效|仍(?:在)?有效")
+ZERO = r"(?<![0-9.])(?:0(?:\.0+)?(?![0-9.])|零)"
+RECEIPT_ZERO_REQUEST = re.compile(rf"(?:{OPEN_RECEIPT.pattern}).{{0,18}}{ZERO}\s*(?:件|个|数量)")
+RECEIPT_ZERO_VALUE = re.compile(
+    rf"(?:{OPEN_RECEIPT.pattern})(?:的)?(?:数量|余量|余额|结余)?\s*"
+    rf"(?:经核实|已核实|已确认|已清点|确认)?\s*(?:为|是|[:：=])?\s*{ZERO}\s*(?:件|个|ea\b)"
+)
+UNCONFIRMED_BALANCE = re.compile(r"未经|尚未核|未匹配|暂挂|待核|待确认|未知|拟|估算|示例|假定|另(?:案|一)")
+RECEIPT_SUPPLEMENT = re.compile(r"采购.{0,20}(?:单据|凭证).{0,12}(?:补核|补查|补数|补证|补齐)"
+                                r"|采购.{0,14}(?:补核|补查|补数|补证|补齐).{0,12}(?:单据|凭证)")
+
 
 def _order_evidence(query):
     """Choose specific order facts for explicit questions, allowing separate facts for compound queries."""
@@ -136,6 +157,12 @@ def _order_evidence(query):
                 checks.append((ORDER_LINE, LINE_CONFIG))
     if re.search(r"引用版本|版本引用", query) and re.search(r"生效日期", query) and "订单" in query:
         checks.append((r"订单", r"版本|版次", r"生效(?:日期|日)"))
+    if "外部修订" in query:
+        checks.append((r"销售(?:订单|单)", r"外部修订", r"映射|对应", r"版本|订单\s*bom"))
+    if "装配位置" in query and re.search(r"多个|重复|相同", query):
+        checks.append((r"装配.{0,5}位置|装配位", r"稳定.{0,8}(?:行键|标识)|路径键"))
+    if all(term in query for term in ("工单", "实际", "工程")) and re.search(r"对回|映射|对应", query):
+        checks.append((r"工单", r"实际使用|实际采用", r"映射|对应", r"(?:组件行|用料行).{0,16}工程"))
     return [tuple(re.compile(term) for term in types) for types in checks]
 
 
@@ -230,6 +257,60 @@ def _formal_requirements(query):
     return checks
 
 
+def _calendar_date(value):
+    try:
+        return date(*map(int, re.findall(r"[0-9]+", value)))
+    except ValueError:
+        return None
+
+
+def _valid_on(sentence, day, identifiers):
+    if window := DATED_WINDOW.search(sentence):
+        first, last = map(_calendar_date, window.groups())
+    elif start := EFFECTIVE_START.search(sentence):
+        window = start
+        first = _calendar_date(start[1])
+        end = EFFECTIVE_END.search(sentence, start.end())
+        last = _calendar_date(end[1]) if end else date.max
+    elif explicit_day := EFFECTIVE_DAY.search(sentence):
+        window = explicit_day
+        first = last = _calendar_date(explicit_day[1])
+    else:
+        return False
+    if not (first and last and first <= day <= last):
+        return False
+    # Only the dated clause can establish which record the window belongs to.
+    scope = sentence[:window.end()] + re.split(r"[，,]", sentence[window.end():], maxsplit=1)[0]
+    codes = set(PART_CODE.findall(scope)) | set(BOM_ROW.findall(scope))
+    return (identifiers.issubset(codes) and bool(re.search(r"有效|生效", scope))
+            and not re.search(r"过期|作废|停用|待确认|待核|批准前|预计", scope))
+
+
+def _context_requirements(query):
+    checks = []
+    if RECEIPT_ZERO_REQUEST.search(query):
+        checks.append(lambda text, sentences: any(
+            RECEIPT_ZERO_VALUE.search(sentence) and not UNCONFIRMED_BALANCE.search(sentence)
+            for sentence in sentences
+        ))
+    if RECEIPT_SUPPLEMENT.search(query):
+        checks.append(lambda text, sentences: all(re.search(term, text) for term in (
+            r"采购(?:订单)?行", r"(?:收货|到货)(?:凭证|记录)", r"补数|补核|补查|补齐|补录|需提供",
+        )))
+    if DATED_EVIDENCE_REQUEST.search(query) and (match := re.search(FULL_DATE, query)):
+        requested_day = _calendar_date(match[0])
+        identifiers = set(PART_CODE.findall(query)) | set(BOM_ROW.findall(query))
+
+        def date_matches(text, sentences):
+            return bool(requested_day and any(
+                _valid_on(sentence, requested_day, identifiers)
+                for sentence in sentences
+            ))
+
+        checks.append(date_matches)
+    return checks
+
+
 def evidence_requirement(query):
     """Build checks only for scope or evidence explicitly requested in the query."""
     original_query = unicodedata.normalize("NFKC", query)
@@ -240,6 +321,7 @@ def evidence_requirement(query):
     plant_codes = PLANT_CODE.findall(query)
     plants = re.compile(rf"{CODE_START}(?:{'|'.join(map(re.escape, plant_codes))}){CODE_END}") if plant_codes else None
     formal = _formal_requirements(query)
+    context = _context_requirements(query)
     asks_limit = bool(LIMIT_REQUEST.search(query) or GRAVITY_LIMIT_REQUEST.search(query))
     if re.search(LEAKAGE_RATE, query) and not RESISTANCE_NAME.search(query):
         # The metric-specific check binds the number to the requested measurement.
@@ -254,7 +336,7 @@ def evidence_requirement(query):
     stock_categories = set(STOCK_CATEGORIES.findall(query)) if re.search(r"可用(?:库存|量)", query) else set()
     if not (versions or rows or named_plants or plants or asks_limit or asks_contract or asks_compensation
             or asks_double_counting or asks_invoice_offset or asks_signed_cutover or order_evidence
-            or effectivity_evidence or stock_categories or formal):
+            or effectivity_evidence or stock_categories or formal or context):
         return None
 
     resistance = set(RESISTANCE_NAME.findall(query))
@@ -293,9 +375,15 @@ def evidence_requirement(query):
         ):
             return False
         text = original.casefold()
-        if asks_contract and not CONTRACT_VALUE.search(text):
+        if not all(check(text, normalized_sentences) for check in context):
             return False
-        if asks_compensation and not CANCELLATION_VALUE.search(text):
+        if asks_contract and not (CONTRACT_VALUE.search(text) or CONTRACT_CLAUSE.search(text)):
+            return False
+        if asks_compensation and not any(
+            CANCELLATION_VALUE.search(sentence) and not RECORD_PENDING.search(sentence)
+            and (not asks_contract or CONTRACT_VALUE.search(sentence) or CONTRACT_CLAUSE.search(sentence))
+            for sentence in normalized_sentences
+        ):
             return False
         if asks_double_counting and not any(
             _mentions_receipt_balances(sentence) and DOUBLE_COUNTING.search(sentence) and RECEIPT_RULE.search(sentence)
