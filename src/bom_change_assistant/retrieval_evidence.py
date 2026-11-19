@@ -67,7 +67,7 @@ SIGNED = re.compile(
 CUTOVER_TIME_REQUEST = re.compile(r"切换(?:的)?(?:时间|日期|时点|窗口)|何时切换|什么时候切换")
 DATE = r"(?:20[0-9]{2}\s*[-/.年]\s*)?[0-9]{1,2}\s*(?:[-/.]\s*[0-9]{1,2}(?![0-9])|月\s*[0-9]{1,2}\s*日)"
 CUTOVER_TIME = re.compile(
-    rf"切换(?:的)?(?:时间|日期|时点|窗口)\s*(?:为|是|定于|锁定为|(?:已)?批准为|[:：])?\s*{DATE}"
+    rf"切换(?:的|执行)?(?:时间|日期|时点|时刻|窗口)\s*(?:为|是|定于|定为|锁定为|(?:已)?批准为|[:：])?\s*{DATE}"
     rf"|{DATE}(?:\s+[0-9]{{1,2}}:[0-9]{{2}})?\s*(?:正式|开始|实施|执行)切换"
 )
 SIGNATURE_LOCATOR = re.compile(
@@ -92,6 +92,26 @@ CUTOVER_DECISION_REQUEST = re.compile(r"切换.{0,10}(?:批准|审批)|(?:批准
 DECISION_TRAILING = re.compile(r"[，,]\s*(?:对照|比较|另行|另一个|仅供|附注)")
 CUTOVER_DATE_REQUEST = re.compile(r"日期|时间|时点|窗口|哪[天日]|几点|何时|什么时候")
 CUTOVER_ISSUE = re.compile(r"切换(?:审批单|批准单|决定|签批).{0,24}已(?:正式)?签发")
+DECISION_REQUEST = re.compile(
+    r"换型.{0,10}(?:决定|决议|审批)|(?:决定|决议|同意).{0,12}换型"
+    r"|(?:联审|评审).{0,5}(?:结论|通过)|(?:同意|批准|准予).{0,24}(?:更换|换产|投用|开线)"
+    r"|(?:现行|仍有效|生效的).{0,10}批件|请提供.{0,12}批件"
+)
+DECISION_ACTION = re.compile(r"换型|切换|换产|投用|更换|启用")
+DECISION_HEADER = re.compile(r"^(?:放行|换型|切换|投用)?(?:批件|审批单|决议|批准单|审批记录)")
+DECISION_FIELD = re.compile(r"^(?:结论|决定|审批状态|审批结论|决议)\s*[:：]\s*(?:同意|通过|批准|准予)")
+DECISION_APPROVED = re.compile(r"联审通过|签发|现行.{0,8}(?:批件|决议)|(?:同意|批准|准予)")
+DECISION_SCOPE = re.compile(r"(?:适用|批准|授权)(?:的)?(?:对象|范围|线体|产线|批次|场地)(?:为|限|是|[:：])")
+DECISION_SITE = re.compile(r"(?:[东西南北中]|[东南][东西南北])(?:场|站|区|厂)")
+RECORD_SCOPE_BREAK = re.compile(r"[，,]\s*(?:另(?:一|有|案)|原(?:批件|决议)|对照|对比|仅供|(?:[东西南北中](?:场|站|区|厂))同型)")
+DECISION_NONAUTHORITATIVE = re.compile(
+    r"仅.{0,12}(?:对比|对照|试装|台架|实验室)|留作|维持|未列|不适用|暂未产生|撤回|已取消|废止"
+)
+PRODUCTION = re.compile(r"批量(?:生产|换产|投产)|量产|正式投产")
+SIGNED_APPENDIX_QUERY = re.compile(r"签发.{0,16}(?:附页|附件)|(?:附页|附件).{0,16}签发")
+SIGNATURE_DETAIL_QUERY = re.compile(r"(?:会签|签署|签字).{0,4}(?:页号|页码|岗位)")
+SIGNATURE_ROLE = re.compile(r"(?:会签|签署|签字)(?:岗位|人)\s*[:：为]\s*(?!待|未|无|空)[^，,。]+")
+SIGNATURE_PAGE = re.compile(r"(?:会签|签署|签字).{0,8}(?:第\s*[0-9一二三四五六七八九十]+\s*页|页(?:码|号)\s*[:：为]\s*[0-9]+)")
 RECORD_TYPES = (
     (re.compile(r"(?:新|有效的?).{0,8}合格证.{0,8}(?:编号|号)"), r"合格证(?:书)?"),
     (re.compile(r"客户.{0,8}(?:发放|放行|交付).{0,8}(?:单号|编号|签批|凭证)"), r"客户.{0,8}(?:发放|放行|交付)(?:单|凭证|签批)"),
@@ -197,9 +217,67 @@ def _has_signed_cutover(text, sentences):
     )
 
 
-def _formal_requirements(query):
+def _decision_requirements(query, references):
     checks = []
+    if SIGNED_APPENDIX_QUERY.search(query):
+        checks.append(lambda sentences: any(
+            references.issubset(PART_CODE.findall(sentence)) and not RECORD_PENDING.search(sentence)
+            and not DECISION_NONAUTHORITATIVE.search(sentence)
+            and (re.search(r"签发(?!人|栏|岗位|状态|记录)", sentence)
+                 and re.search(r"正本|批件|审批单", sentence)
+                 or re.search(r"适用.{0,5}(?:附页|附件)|(?:附页|附件).{0,12}(?:线体|装配线|产线)", sentence)
+                 and CUTOVER_TIME.search(sentence))
+            for sentence in sentences
+        ))
+    if SIGNATURE_DETAIL_QUERY.search(query):
+        asks_page = re.search(r"页号|页码|第几页", query)
+        asks_role = "岗位" in query
+        checks.append(lambda sentences: (
+            references.issubset(PART_CODE.findall(" ".join(sentences)))
+            and (not asks_page or any(SIGNATURE_PAGE.search(s) and not RECORD_PENDING.search(s) for s in sentences))
+            and (not asks_role or any(SIGNATURE_ROLE.search(s) and not RECORD_PENDING.search(s) for s in sentences))
+        ))
+    if DECISION_REQUEST.search(query) and (references or DECISION_SITE.search(query)):
+        sites = set(DECISION_SITE.findall(query))
+        mass_production = PRODUCTION.search(query)
+        needs_time = re.search(r"几点|何时|开线时刻|哪天|时刻|时间", query)
+
+        def approve(sentences):
+            # Keep table metadata with the decision. Commentary and superseded clauses
+            # cannot supply missing objects or grant authority to another activity.
+            clauses = [part.strip() for sentence in sentences
+                       for part in RECORD_SCOPE_BREAK.split(sentence, maxsplit=1)[:1] if part.strip()]
+            records = []
+            for clause in clauses:
+                if not records or DECISION_HEADER.match(clause):
+                    records.append([])
+                records[-1].append(clause)
+            return any(approved_record(record) for record in records)
+
+        def approved_record(record):
+            authority = [part for part in record
+                         if not (RECORD_PENDING.search(part) or DECISION_NONAUTHORITATIVE.search(part))]
+            if not any(
+                (DECISION_FIELD.search(part) or DECISION_APPROVED.search(part)) and DECISION_ACTION.search(part)
+                and (not mass_production or PRODUCTION.search(part))
+                for part in authority
+            ):
+                return False
+            scope = [part for part in authority
+                     if (DECISION_SCOPE.search(part) or DECISION_HEADER.search(part)
+                         or (DECISION_APPROVED.search(part) and DECISION_ACTION.search(part)))]
+            scoped_text = " ".join(scope)
+            if not references.issubset(PART_CODE.findall(scoped_text)) or not sites.issubset(DECISION_SITE.findall(scoped_text)):
+                return False
+            return not needs_time or any(re.search(DATE, p) and re.search(r"投用|切换|启用|开线|执行", p) for p in authority)
+
+        checks.append(approve)
+    return checks
+
+
+def _formal_requirements(query):
     references = set(PART_CODE.findall(query))
+    checks = _decision_requirements(query, references)
     if CUTOVER_DECISION_REQUEST.search(query) and (references or not SIGNATURE.search(query)):
         needs_date = CUTOVER_DATE_REQUEST.search(query)
 
