@@ -117,9 +117,22 @@ RECORD_TYPES = (
     (re.compile(r"客户.{0,8}(?:发放|放行|交付).{0,8}(?:单号|编号|签批|凭证)"), r"客户.{0,8}(?:发放|放行|交付)(?:单|凭证|签批)"),
     (re.compile(r"(?:量产.{0,8}(?:放行|审批|签发)|(?:批准|放行)量产).{0,12}(?:单号|编号|签发单)"), r"量产(?:放行|批准|签发)(?:单|记录|凭证)"),
 )
-PROCEDURE_REQUEST = re.compile(r"(?:通用|正式|双签).{0,12}(?:规程|作业标准)|(?:规程|作业标准)(?:的)?正文")
-PROCEDURE_DIRECTIVE = re.compile(r"要求|必须|应当|不得|须|方可|才可|禁止")
 PROCEDURE_TEXT = re.compile(r"规程|作业标准|作业指导书|规范")
+PROCEDURE_REQUEST = re.compile(
+    rf"(?:通用|正式|双签).{{0,12}}(?:{PROCEDURE_TEXT.pattern})"
+    rf"|(?:{PROCEDURE_TEXT.pattern})(?:的)?(?:正式)?正文"
+)
+PROCEDURE_DIRECTIVE = re.compile(r"要求|规定|必须|应当|不得|须|方可|才可|禁止")
+PROCEDURE_UNCONTROLLED = re.compile(
+    r"拟稿|草案|征求意见|未(?:受控|正式)?发布|未签发现行规程|已废止"
+    r"|只限本次|仅限(?:该|此|本)(?:次|批|工单)|一次性(?:偏差|作业规程|许可|授权|处置|指令)"
+    r"|单次处置|不得推广|临时(?:处置|通知)"
+    r"|仅供展示|(?:目录|索引).{0,24}(?:规程|条文|题名)|(?:未附|缺少).{0,8}正文|正文未附"
+)
+PROCEDURE_TOPICS = (
+    r"清场", r"双签|双人签署", r"软(?:质)?护套", r"双层(?:式)?托盘", r"跨班",
+    r"封样桶", r"量块", r"复机", r"首件", r"巡检", r"入库",
+)
 LEAKAGE_RATE = r"(?:最大(?:允许)?)?泄漏率"
 LEAKAGE_BOUND = re.compile(
     rf"(?:最大(?:允许)?泄漏率|泄漏率(?:的)?(?:上限|限值|不得超过|不大于|至多|[≤<]))"
@@ -349,6 +362,29 @@ def _quantitative_requirement(query):
     return qualifies
 
 
+def _procedure_requirement(query, references):
+    topics = [topic for topic in PROCEDURE_TOPICS if re.search(topic, query)]
+
+    def qualifies(sentences):
+        if PROCEDURE_UNCONTROLLED.search(" ".join(sentences)):
+            return False
+        for index, heading in enumerate(sentences):
+            if not PROCEDURE_TEXT.search(heading):
+                continue
+            # Published headings can introduce operative text in the next sentence
+            # without repeating the title or document number on each instruction.
+            rule = " ".join(sentences[index:index + 3])
+            if not PROCEDURE_DIRECTIVE.search(rule):
+                continue
+            if not references.issubset(PART_CODE.findall(rule)):
+                continue
+            if all(re.search(topic, rule) for topic in topics):
+                return True
+        return False
+
+    return qualifies
+
+
 def _formal_requirements(query):
     references = set(PART_CODE.findall(query))
     checks = _decision_requirements(query, references)
@@ -394,12 +430,7 @@ def _formal_requirements(query):
 
             checks.append(issued)
     if PROCEDURE_REQUEST.search(query):
-        checks.append(lambda sentences: any(
-            PROCEDURE_TEXT.search(sentence) and PROCEDURE_DIRECTIVE.search(sentence)
-            and ("清场" not in query or "清场" in sentence)
-            and ("双签" not in query or "双签" in sentence)
-            for sentence in sentences
-        ))
+        checks.append(_procedure_requirement(query, references))
     if re.search(LEAKAGE_RATE, query) and re.search(r"最大|上限|限值|判退", query):
         checks.append(lambda sentences: any(
             LEAKAGE_BOUND.search(sentence) and not RECORD_PENDING.search(sentence)
