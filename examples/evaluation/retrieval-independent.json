@@ -1,0 +1,300 @@
+{
+  "provenance": {
+    "source": "BOM跨部门影响-工程核查示例.md",
+    "sha256": "10c656e622a1cce95616f7fa939a7ad655f7cba544c1d1cdbee84d6c41d1744a",
+    "labels": "I01–I05 preserve the pre-existing de-identified acceptance expectations. I06–I21 were labeled from source text before running the retrieval baseline. D02–D07 are synthetic distractors and controls. No domain-expert sign-off for the new labels."
+  },
+  "documents": [
+    {
+      "id": "D01",
+      "section": "standards",
+      "title": "BOM 跨部门影响核查示例",
+      "paragraphs": [
+        "# BOM 跨部门影响核查示例",
+        "范围与订单。比较新旧 BOM 的组件、用量和适用范围。沿有效结构向上追到父件和成品，再关联订单。逐单核对引用版本、配置、工厂、生效日期和执行状态。缺少证据时列为待核，由责任部门补齐。",
+        "供需与交付。采购核对未结采购行、供应承诺和到货时间。计划按物料、工厂和库位核对可用库存、需求和新料缺口。同一采购订单行的在途量和未到货量不得重复计入。仓储核对待检和隔离库存，销售确认受影响订单的交期和沟通事项。",
+        "制造与质量。区分未开工、已领料、在制及完工未交付的工单，再确认继续生产、换料、隔离或返工的范围。工程与质量核实新料验证、替代条件和放行要求，制造确认现场执行条件。",
+        "切换与处置。定日切换前确认新料能按时到位及在制品如何处理。允许消耗旧料时，先确定可使用的范围、剩余需求和切换触发条件。验证、供应或现场处置证据不齐时暂缓切换，记录缺项、责任部门和复核时间。",
+        "售后与记录。确认维修件和备件能否用于已交付的产品，以及旧件是否需要继续保留。核查记录关联 BOM 版本、影响路径、订单状态、待核证据和责任部门。确认适用范围后再推进执行。"
+      ]
+    },
+    {
+      "id": "D02",
+      "section": "standards",
+      "title": "定制组件适用性留痕",
+      "paragraphs": [
+        "对客户订单逐行保留选配标识，按实际引用的设计版次追到装机清单。需求日期只用于交付检查。",
+        "订单行同时被纳入和剔除时，保留两份原始清单，标成待确认，交由工程与计划共同裁定。"
+      ]
+    },
+    {
+      "id": "D03",
+      "section": "standards",
+      "title": "物流和收货凭证检查",
+      "paragraphs": [
+        "仓库按物料凭证逐笔核对累计净收货。入库为正，退供应商为负；成对冲销按凭证抵销，记录流水覆盖期。",
+        "运输追踪登记预计抵达时间和承运状态。物流在途台账无法证明仓库已收货。"
+      ]
+    },
+    {
+      "id": "D04",
+      "section": "standards",
+      "title": "库位与质检状态",
+      "paragraphs": [
+        "厂内余额须拆分自由使用、待检与冻结。寄售须确认是否取得领用权，取得之前不并入可用库存。",
+        "库位移动单记录仓位调整；同一工厂内的上架移库不会改变过账的累计收货。"
+      ]
+    },
+    {
+      "id": "D05",
+      "section": "validation",
+      "title": "验证项目和正式结论",
+      "paragraphs": [
+        "装配前用塞尺测配合间隙并复测安装面平面度，保留测点位置。装完后的外观照片无法验证配合尺寸。",
+        "耐久试验保留振动波形和试验台校准记录。试验偏差交验证组复核。",
+        "高温复验的原始表应记录绝缘阻值、环境湿度和仪器编号。合格阈值由批准的检验规范给出。"
+      ]
+    },
+    {
+      "id": "D06",
+      "section": "validation",
+      "title": "在制工单与批次签核",
+      "paragraphs": [
+        "生产单已放行且仍在车间流转时，核对实领组件和已执行工序，形成隔离或返工建议后送工程、制造复核。",
+        "待检批次须由质量人员依据检验记录复核，再凭正式放行单解除冻结。",
+        "零件项目例会复核新件到位时间、产能限制和工装状态。会议纪要仅登记后续复核人。"
+      ]
+    },
+    {
+      "id": "D07",
+      "section": "changes",
+      "title": "变更生效与售后实例",
+      "paragraphs": [
+        "变更窗口的首尾两天均纳入有效期。在切换日还要确认上一层组装清单是否仍有效。",
+        "售后兼容验证须按已出货设备的机型和序列号核对备件适配，库存地点仅用于后续调拨。"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "I01",
+      "group": "既有脱敏验收",
+      "split": "holdout",
+      "section": "standards",
+      "query": "订单还在跑旧版本时，如何核对引用版本和生效日期？",
+      "relevant": [
+        "D01:2"
+      ],
+      "label_reason": "沿用验收标准指定的业务段与分区。"
+    },
+    {
+      "id": "I02",
+      "group": "既有脱敏验收",
+      "split": "holdout",
+      "section": "standards",
+      "query": "同一采购订单行的在途量和未到货量怎么防重复？",
+      "relevant": [
+        "D01:3"
+      ],
+      "label_reason": "沿用验收标准指定的业务段与分区。"
+    },
+    {
+      "id": "I03",
+      "group": "既有脱敏验收",
+      "split": "holdout",
+      "section": "standards",
+      "query": "旧件打算耗完再改用新件，何时可以换？",
+      "relevant": [
+        "D01:5"
+      ],
+      "label_reason": "沿用验收标准指定的业务段与分区。"
+    },
+    {
+      "id": "I04",
+      "group": "既有脱敏验收",
+      "split": "holdout",
+      "section": "standards",
+      "query": "已经交付的产品还能用新备件维修吗？",
+      "relevant": [
+        "D01:6"
+      ],
+      "label_reason": "沿用验收标准指定的业务段与分区。"
+    },
+    {
+      "id": "I05",
+      "group": "既有脱敏验收",
+      "split": "holdout",
+      "section": "validation",
+      "query": "同一采购订单行的在途量和未到货量怎么防重复？",
+      "relevant": [],
+      "label_reason": "沿用验收标准指定的业务段与分区。"
+    },
+    {
+      "id": "I06",
+      "group": "收货",
+      "split": "diagnosis",
+      "query": "供应商送到后又拉走几箱，系统里的净收货应查哪些凭证？",
+      "section": "standards",
+      "relevant": [
+        "D03:1"
+      ],
+      "label_reason": "入库和退货流水决定净收货，运输追踪和仓位不提供流水算法。"
+    },
+    {
+      "id": "I07",
+      "group": "收货",
+      "split": "diagnosis",
+      "query": "这批材料在路上，到了没有能凭运输追踪确认吗？",
+      "section": "standards",
+      "relevant": [
+        "D03:2"
+      ],
+      "label_reason": "运输状态不能作为收货凭证；采购防重并未回答是否已收。"
+    },
+    {
+      "id": "I08",
+      "group": "库存",
+      "split": "diagnosis",
+      "query": "哪些待检、冻结或寄售的厂内余额可以算可用库存？",
+      "section": "standards",
+      "relevant": [
+        "D04:1"
+      ],
+      "label_reason": "需要库存分类与寄售领用权规则。"
+    },
+    {
+      "id": "I09",
+      "group": "装配",
+      "split": "diagnosis",
+      "query": "新支架装进去会不会卡滞，要量哪里？",
+      "section": "validation",
+      "relevant": [
+        "D05:1"
+      ],
+      "label_reason": "配合间隙与安装面测量是直接依据；振动或例会不验证尺寸。"
+    },
+    {
+      "id": "I10",
+      "group": "在制",
+      "split": "diagnosis",
+      "query": "生产单已经开工，要返工先查领了什么、做到哪一步吗？",
+      "section": "validation",
+      "relevant": [
+        "D06:1"
+      ],
+      "label_reason": "需要实际领料和工序；质检放行只覆盖批次使用。"
+    },
+    {
+      "id": "I11",
+      "group": "配置",
+      "split": "diagnosis",
+      "query": "销售订单行既在适用清单又在排除清单，配置冲突时怎么办？",
+      "section": "standards",
+      "relevant": [
+        "D02:2"
+      ],
+      "label_reason": "同时纳入和剔除才要求保留两份清单和联合裁定。"
+    },
+    {
+      "id": "I12",
+      "group": "无证据",
+      "split": "diagnosis",
+      "query": "振动试验的峰值允许多少倍重力加速度？",
+      "section": "validation",
+      "relevant": [],
+      "label_reason": "材料只要求记录波形，没有给出允许值。"
+    },
+    {
+      "id": "I13",
+      "group": "无证据",
+      "split": "diagnosis",
+      "query": "在途运费因延迟交付应退还多少？",
+      "section": "standards",
+      "relevant": [],
+      "label_reason": "材料包含物流状态和防重；没有运费退款额度。"
+    },
+    {
+      "id": "I14",
+      "group": "逐行配置",
+      "split": "holdout",
+      "query": "客户向我们订了多行相同型号，每行用了什么选配怎么查？",
+      "section": "standards",
+      "relevant": [
+        "D02:1"
+      ],
+      "label_reason": "需要逐行选配号与实际设计版次路径；通用逐单核对不提供逐行方法。"
+    },
+    {
+      "id": "I15",
+      "group": "质量",
+      "split": "holdout",
+      "query": "检验批冻结后，拿哪一张质量单才能恢复领用？",
+      "section": "validation",
+      "relevant": [
+        "D06:2"
+      ],
+      "label_reason": "需要质量正式放行单。"
+    },
+    {
+      "id": "I16",
+      "group": "生效",
+      "split": "holdout",
+      "query": "第一个和最后一个切换日也有效吗？父件装配清单过期的话怎么核对？",
+      "section": "changes",
+      "relevant": [
+        "D07:1"
+      ],
+      "label_reason": "要求首尾边界和上层清单有效性。"
+    },
+    {
+      "id": "I17",
+      "group": "售后",
+      "split": "holdout",
+      "query": "备件给以前出货的设备用，按什么识别兼容范围？",
+      "section": "changes",
+      "relevant": [
+        "D07:2"
+      ],
+      "label_reason": "机型和序列号是适配证据。"
+    },
+    {
+      "id": "I18",
+      "group": "多证据",
+      "split": "holdout",
+      "query": "已领料和在制工单怎么分流？决定切换日期前还要看哪些新料和旧料条件？",
+      "section": "standards",
+      "relevant": [
+        "D01:4",
+        "D01:5"
+      ],
+      "label_reason": "制造状态和现场处置、供料和旧料消耗条件分别在两段。"
+    },
+    {
+      "id": "I19",
+      "group": "无证据",
+      "split": "holdout",
+      "query": "高温复验的绝缘电阻下限是多少兆欧？",
+      "section": "validation",
+      "relevant": [],
+      "label_reason": "原始表要求记录读数；没有批准值。"
+    },
+    {
+      "id": "I20",
+      "group": "无证据",
+      "split": "holdout",
+      "query": "采购订单行在途和未到货可以用哪张发票的金额抵减？",
+      "section": "standards",
+      "relevant": [],
+      "label_reason": "防重说明不提供发票抵减规则或金额。"
+    },
+    {
+      "id": "I21",
+      "group": "无证据",
+      "split": "holdout",
+      "query": "已批准的切换时间和人员签字在哪里？",
+      "section": "changes",
+      "relevant": [],
+      "label_reason": "现有案例仅说明如何判断生效窗口，没有实际签字或批准的切换安排。"
+    }
+  ]
+}

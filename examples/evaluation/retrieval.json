@@ -1,0 +1,100 @@
+{
+  "documents": [
+    {"id": "K01", "section": "changes", "title": "东厂 V2 换件案例", "paragraphs": [
+      "FG-700 东厂 V2 行 L20 将 MAT-101 替换为 MAT-901。仅将实际引用 V2 且适用 L20 的开放订单行列为待业务评审。",
+      "FG-700 东厂 V2 行 L20 的订单版本引用缺失时，记录为待核；从订单行配置或正式版本记录补齐证据。"
+    ]},
+    {"id": "K02", "section": "changes", "title": "东厂 V1 换件案例", "paragraphs": [
+      "FG-700 东厂 V1 行 L20 仍使用 MAT-101。V1 历史换件只适用于引用 V1 的订单，按旧版装配图核对。"
+    ]},
+    {"id": "K03", "section": "changes", "title": "西厂 V2 换件案例", "paragraphs": [
+      "FG-700 西厂 V2 行 L20 将 MAT-101 替换为 MAT-902。只适用于西厂执行工单，按西厂设备和切换计划确认。"
+    ]},
+    {"id": "K04", "section": "standards", "title": "订单配置核对规范", "paragraphs": [
+      "一个销售订单的不同订单行可使用不同配置。逐行核对稳定 BOM 行号；同一组件出现在另一 BOM 行时，仍按各行适用性判断。",
+      "同一订单行收到互相冲突的适用和排除证据时，保留证据并标为待核，交由工程和计划确认；禁止据此迁移版本。"
+    ]},
+    {"id": "K05", "section": "standards", "title": "生效窗口规范", "paragraphs": [
+      "工程生效窗口包含起日与止日。目标组件行和每一级上层总成在拟生效日都须有效。",
+      "订单需求日早于拟生效日时，复核实际执行和库存占用，确认是否按计划切换。"
+    ]},
+    {"id": "K06", "section": "validation", "title": "替换件装配验证", "paragraphs": [
+      "替代件启用前核对装配间隙，并复测安装面的尺寸。",
+      "零件 MAT-901 通过尺寸检查后，还需按工程要求验证绝缘电阻并保留检测记录。"
+    ]},
+    {"id": "K07", "section": "validation", "title": "邻近编号检验记录", "paragraphs": [
+      "MAT-110 的尺寸验证采用另一套检具，判定结果只适用于该零件，不能用于 MAT-101。"
+    ]},
+    {"id": "K08", "section": "standards", "title": "采购承诺复核", "paragraphs": [
+      "按采购订单行核对剩余未到货承诺和在途量，检查来源口径是否重叠，未经核实不得相加。",
+      "累计净到货量按收货减退货及有效冲销计算。凭证流水缺失时应核对历史覆盖。"
+    ]},
+    {"id": "K09", "section": "changes", "title": "旧料到货切换案例", "paragraphs": [
+      "MAT-503 已采购并部分到货。工程、采购和计划共同核对取消条件、旧料消耗和新料可用日期后再确定切换。"
+    ]},
+    {"id": "K10", "section": "validation", "title": "工单执行核对", "paragraphs": [
+      "已释放或在制工单须核对实际领料、投料与当前工序，再由制造和工程判断是否需要返工或隔离。"
+    ]},
+    {"id": "K11", "section": "validation", "title": "批次隔离与质量放行", "paragraphs": [
+      "质量人员以检验记录和批次身份复核隔离状态，须取得正式放行凭证后才能使用。"
+    ]},
+    {"id": "K12", "section": "standards", "title": "库位数量核对", "paragraphs": [
+      "可用库存按物料、工厂、库位核对。质量冻结和寄售库存须确认库存属性，暂不计入可用量。"
+    ]},
+    {"id": "K13", "section": "changes", "title": "售后互换案例", "paragraphs": [
+      "售后替换先清点已交付设备的序列号和装机基数，再由工程验证新旧备件是否互换。"
+    ]},
+    {"id": "K14", "section": "validation", "title": "替换件验收旧版材料", "paragraphs": [
+      "试验批 MAT-777 振动测试按旧材料编号核验；修订后须重新确认引用。",
+      "MAT-778 噪声试验保留设备校准和原始读数。"
+    ]},
+    {"id": "K15", "section": "standards", "title": "定制销售订单识别", "paragraphs": [
+      "判断定制销售订单是否需要复核，应核对实际引用的工程版本及订单行配置，并结合需求日期确认。"
+    ]}
+  ],
+  "cases": [
+    {"id": "R01", "group": "范围", "query": "FG-700 东厂 V2 L20 由 MAT-101 改为 MAT-901，哪些开放订单行需评审？", "section": "changes", "relevant": ["K01:1"]},
+    {"id": "R02", "group": "范围", "query": "FG-700 东厂 V1 的 MAT-101 版本沿用及旧版装配图", "section": "", "relevant": ["K02:1"]},
+    {"id": "R03", "group": "范围", "query": "西厂 FG-700 V2 L20 改用 MAT-902 时适用哪些工单？", "section": "changes", "relevant": ["K03:1"]},
+    {"id": "R04", "group": "范围", "query": "FG-700 东厂 V2 L20 订单缺少版本引用，如何补证？", "section": "changes", "relevant": ["K01:2"]},
+    {"id": "R05", "group": "近号", "query": "MAT-110 专用检具，尺寸验证靠什么？", "section": "validation", "relevant": ["K07:1"]},
+    {"id": "R06", "group": "近号", "query": "MAT-901 尺寸检查之后还要测什么？", "section": "validation", "relevant": ["K06:2"]},
+    {"id": "R07", "group": "范围", "query": "V2 东厂 MAT-101 原件替换后的订单范围，与缺版本的订单如何区分？", "section": "", "relevant": ["K01:1", "K01:2"]},
+    {"id": "R08", "group": "逐行配置", "query": "同一销售订单不同订单行使用不同配置，如何按稳定 BOM 行号核对？", "section": "standards", "relevant": ["K04:1"]},
+    {"id": "R09", "group": "逐行配置", "query": "同一订单行的适用和排除证据冲突时可以直接迁移版本吗？", "section": "standards", "relevant": ["K04:2"]},
+    {"id": "R10", "group": "逐行配置", "query": "定制销售订单行配置和需求日期，应该结合哪个版本引用复核？", "section": "standards", "relevant": ["K15:1"]},
+    {"id": "R11", "group": "日期", "query": "生效窗口包含起日和止日吗？上层总成在拟生效日要有效吗？", "section": "standards", "relevant": ["K05:1"]},
+    {"id": "R12", "group": "日期", "query": "订单需求日早于拟生效日，库存占用和执行如何处理？", "section": "standards", "relevant": ["K05:2"]},
+    {"id": "R13", "group": "采购", "query": "采购订单行的未到货承诺和在途量能直接相加吗？", "section": "standards", "relevant": ["K08:1"]},
+    {"id": "R14", "group": "采购", "query": "累计净到货如何扣退货和有效冲销？缺少凭证流水时怎么确认？", "section": "standards", "relevant": ["K08:2"]},
+    {"id": "R15", "group": "采购", "query": "MAT-503 已采购部分到货，谁确认取消条件和旧料消耗？", "section": "changes", "relevant": ["K09:1"]},
+    {"id": "R16", "group": "执行", "query": "已释放工单的实际领料、投料和工序由谁核对？", "section": "validation", "relevant": ["K10:1"]},
+    {"id": "R17", "group": "执行", "query": "批次处于隔离状态，要依据哪个质量放行凭证判定？", "section": "validation", "relevant": ["K11:1"]},
+    {"id": "R18", "group": "执行", "query": "物料、工厂和库位范围里的质量冻结、寄售算可用库存吗？", "section": "standards", "relevant": ["K12:1"]},
+    {"id": "R19", "group": "执行", "query": "售后互换如何核对已交付设备序列号和装机基数？", "section": "changes", "relevant": ["K13:1"]},
+    {"id": "R20", "group": "改写", "query": "新零件装上去会不会卡住，要量什么？", "section": "validation", "relevant": ["K06:1"]},
+    {"id": "R21", "group": "改写", "query": "发出去了又退回来，系统里到底收了几件怎么算？", "section": "standards", "relevant": ["K08:2"]},
+    {"id": "R22", "group": "改写", "query": "单子已经上产线了，查什么才知道现在拆不拆？", "section": "validation", "relevant": ["K10:1"]},
+    {"id": "R23", "group": "改写", "query": "一个客户下了两行同样的成品，怎么知道其中一行有没有装这个件？", "section": "standards", "relevant": ["K04:1", "K15:1"]},
+    {"id": "R24", "group": "多依据", "query": "定制销售订单引用的工程版本、逐行配置，以及配置冲突如何确认？", "section": "", "relevant": ["K04:1", "K04:2", "K15:1"]},
+    {"id": "R25", "group": "多依据", "query": "目标路径在拟生效日有效，订单需求日在拟生效日前，需要核对哪些生效条件？", "section": "standards", "relevant": ["K05:1", "K05:2"]},
+    {"id": "R26", "group": "引用", "query": "MAT-777 旧版振动测试依据", "section": "validation", "relevant": ["K14:1"]},
+    {"id": "R27", "group": "引用", "query": "MAT-778 噪声试验需要的设备校准和原始读数", "section": "validation", "relevant": ["K14:2"]},
+    {"id": "R28", "group": "范围", "query": "装配间隙和安装面复测", "section": "", "relevant": ["K06:1"]},
+    {"id": "R29", "group": "无证据", "query": "FG-700 北厂 V9 L99 的 MAT-101 换料审批", "section": "changes", "relevant": []},
+    {"id": "R30", "group": "无证据", "query": "MAT-111 尺寸验证专用检具", "section": "validation", "relevant": []},
+    {"id": "R31", "group": "无证据", "query": "MAT-901 绝缘电阻检测合格阈值是多少兆欧？", "section": "validation", "relevant": []},
+    {"id": "R32", "group": "无证据", "query": "剩余未到货采购承诺的取消赔偿金额和供货合同编号", "section": "standards", "relevant": []},
+    {"id": "R33", "group": "无证据", "query": "西厂 MAT-902 的入库检验报告和判定阈值", "section": "validation", "relevant": []},
+    {"id": "R34", "group": "无证据", "query": "请查询今天的足球比分和公园天气", "section": "", "relevant": []},
+    {"id": "R35", "group": "空分区", "query": "MAT-901 尺寸检查", "section": "unfiled", "relevant": []},
+    {"id": "R36", "group": "无证据", "query": "MAT-990 订单行配置", "section": "changes", "relevant": []}
+  ],
+  "revision": {
+    "document": "K14",
+    "replacement": "MAT-777 振动测试使用修订后的装夹方案；由工程确认夹具与产品配置。",
+    "section": "standards",
+    "revised_query": "MAT-777 振动测试装夹方案",
+    "withdrawn_query": "MAT-778 噪声试验"
+  }
+}
