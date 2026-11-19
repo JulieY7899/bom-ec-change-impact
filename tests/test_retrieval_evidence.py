@@ -158,3 +158,20 @@ class QuantitativeLimitTests(unittest.TestCase):
         self.assertTrue(qualifies("已发布条款规定冷启动平均响应上限为 95 ms。"))
         self.assertFalse(qualifies("已发布条款规定冷启动单次响应时间不得超过 95 ms。"))
         self.assertFalse(qualifies("已发布条款规定暖机后平均响应时间不得超过 95 ms。"))
+
+
+class ProcedureTextTests(unittest.TestCase):
+    def test_require_an_issued_and_applicable_procedure_with_operative_text(self):
+        qualifies = evidence_requirement("RL-230 的跨班搬运是否必须使用双层托盘？查规程的正式正文。")
+        self.assertTrue(qualifies(
+            "物料跨班搬运规程 RL-230 已发布，全厂均适用。领取双层托盘后必须戴一次性手套复核标识，完成后方可交运。"
+        ))
+        for unsupported in (
+            "物料跨班搬运规程拟稿 RL-230，建议用双层托盘。正在征求意见，无生效日期。",
+            "一次性作业规程 RL-230 同意本批使用双层托盘。跨班转运完毕须回收托盘。",
+            "作业目录挂有跨班搬运规程 RL-230，双层托盘要求正文未附。",
+            "常温存放规程 RL-230 已发布，规定在库物料放双层托盘。",
+            "跨班搬运规程 RL-235 已发布，必须使用双层托盘。",
+        ):
+            with self.subTest(unsupported=unsupported):
+                self.assertFalse(qualifies(unsupported))
