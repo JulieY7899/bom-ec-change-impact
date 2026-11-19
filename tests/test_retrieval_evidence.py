@@ -92,3 +92,46 @@ class ContextEvidenceTests(unittest.TestCase):
                 self.assertTrue(qualifies(positive), positive)
                 for negative in negatives:
                     self.assertFalse(qualifies(negative), negative)
+
+
+class DecisionScopeTests(unittest.TestCase):
+    def test_approval_belongs_to_the_requested_object_and_action(self):
+        cases = (
+            (
+                "DE-731 对线体 LN-42 的换型决定何时开线？",
+                "放行决议 DE-731。结论：同意换型。适用线体：LN-42。开线时刻：2031-08-21 07:10。",
+                (
+                    "放行决议 DE-731。结论：同意换型。适用线体：LN-46。开线时刻：2031-08-21 07:10。"
+                    "LN-42 仅用于试装对照。",
+                    "放行决议 DE-731。结论：同意换型。适用线体：LN-46。开线时刻：2031-08-21 07:10。"
+                    "放行决议 DE-732。结论：同意换型。适用线体：LN-42。开线时刻：2031-08-21 07:10。",
+                ),
+            ),
+            (
+                "请提供仍有效的 AP-523 批准成品 KT-24 投用的依据。",
+                "AP-523 为 KT-24 的现行投用批件，确定 2031-08-21 投用。",
+                ("AP-524 为 KT-24 的现行投用批件，确定 2031-08-21 投用。原批件 AP-523 已撤回。",),
+            ),
+            (
+                "查 AP-678 已批准批次 BG-40 批量换产的审批原文。",
+                "AP-678 已批准批次 BG-40 批量换产，生效安排另附。",
+                ("批件 AP-678 仅批准批次 BG-40 的台架试装。批量换产暂未批准。",),
+            ),
+            (
+                "为东厂 LN-43 更换定位架的 AP-679 有联审结论吗？",
+                "设备换型审批 AP-679 经联审通过，变更内容为更换定位架，适用范围限东厂 LN-43。",
+                ("设备换型审批 AP-679 经联审通过，变更内容为更换定位架，适用范围限西厂 LN-43。东厂留作储备。",),
+            ),
+        )
+        for query, positive, negatives in cases:
+            with self.subTest(query=query):
+                qualifies = evidence_requirement(query)
+                self.assertTrue(qualifies(positive), positive)
+                for negative in negatives:
+                    self.assertFalse(qualifies(negative), negative)
+
+    def test_signed_record_and_operative_appendix_each_support_the_relevant_detail(self):
+        qualifies = evidence_requirement("AP-680 何时签发？附页给哪条产线以及切换时点？")
+        self.assertTrue(qualifies("审批单 AP-680 已于 2031-08-21 签发，切换时点见附页。"))
+        self.assertTrue(qualifies("AP-680 适用性附件列出产线 LN-44，切换时点定为 2031-08-22 08:00。"))
+        self.assertFalse(qualifies("归档清单记录 AP-680 审批单和适用性附页的接收状态，签署岗位未随包入库。"))
