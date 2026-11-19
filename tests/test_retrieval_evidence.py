@@ -135,3 +135,26 @@ class DecisionScopeTests(unittest.TestCase):
         self.assertTrue(qualifies("审批单 AP-680 已于 2031-08-21 签发，切换时点见附页。"))
         self.assertTrue(qualifies("AP-680 适用性附件列出产线 LN-44，切换时点定为 2031-08-22 08:00。"))
         self.assertFalse(qualifies("归档清单记录 AP-680 审批单和适用性附页的接收状态，签署岗位未随包入库。"))
+
+
+class QuantitativeLimitTests(unittest.TestCase):
+    def test_require_formal_limit_in_the_requested_direction_and_condition(self):
+        qualifies = evidence_requirement("按规范 QA-615，扣件 XT-42 在 21 ℃ 的正式脱开力下限是多少 N？")
+        self.assertTrue(qualifies("检验规范 QA-615 已发布。扣件 XT-42 在 21°C 的最小脱开力为 62 N。"))
+        for unsupported in (
+            "检验规范 QA-615 已发布。扣件 XT-42 在 21°C 的最大脱开力为 62 N。",
+            "检验规范 QA-615 已发布。扣件 XT-42 在 25°C 的最小脱开力为 62 N。",
+            "检验规范 QA-615 已发布。扣件 XT-42 在 21°C 的最小脱开力为 62 mN。",
+            "试验记录 QA-615 显示扣件 XT-42 在 21°C 实测最小脱开力为 62 N。",
+            "检验规范 QA-615 已生效。扣件 XT-45 在 21°C 的最小脱开力为 62 N。",
+            "检验规范 QA-615 待评审。扣件 XT-42 在 21°C 的最小脱开力为 62 N。",
+        ):
+            with self.subTest(unsupported=unsupported):
+                self.assertFalse(qualifies(unsupported))
+
+    def test_average_and_individual_limits_are_distinct(self):
+        qualifies = evidence_requirement("冷启动平均响应时间的正式上限是多少毫秒？")
+        self.assertTrue(qualifies("已发布条款规定冷启动平均响应时间不得超过 95 ms。"))
+        self.assertTrue(qualifies("已发布条款规定冷启动平均响应上限为 95 ms。"))
+        self.assertFalse(qualifies("已发布条款规定冷启动单次响应时间不得超过 95 ms。"))
+        self.assertFalse(qualifies("已发布条款规定暖机后平均响应时间不得超过 95 ms。"))
