@@ -60,7 +60,7 @@ SIGNED = re.compile(
     rf"|(?:{SIGNATURE.pattern})(?:人员|人|记录|页)?\s*(?:见|位于|归档于|已归档)"
 )
 CUTOVER_TIME_REQUEST = re.compile(r"切换(?:的)?(?:时间|日期|时点|窗口)|何时切换|什么时候切换")
-DATE = r"(?:20[0-9]{2}[-/.年])?[0-9]{1,2}(?:[-/.][0-9]{1,2}(?![0-9])|月[0-9]{1,2}日)"
+DATE = r"(?:20[0-9]{2}\s*[-/.年]\s*)?[0-9]{1,2}\s*(?:[-/.]\s*[0-9]{1,2}(?![0-9])|月\s*[0-9]{1,2}\s*日)"
 CUTOVER_TIME = re.compile(
     rf"切换(?:的)?(?:时间|日期|时点|窗口)\s*(?:为|是|定于|锁定为|(?:已)?批准为|[:：])?\s*{DATE}"
     rf"|{DATE}(?:\s+[0-9]{{1,2}}:[0-9]{{2}})?\s*(?:正式|开始|实施|执行)切换"
@@ -77,6 +77,28 @@ APPROVAL_PENDING = re.compile(
     r"|(?:签字|签名|签署|会签|签核)(?:待补|未完成)"
     r"|(?:若|如果)[^。！？；\n]{0,12}(?:审批通过|获批|批准)"
     r"|撤销|作废|取消批准|拟(?:定|安排|于|切换)|虚构|审批样例|签字示例|演示记录"
+)
+# Explicit formal-record questions require evidence of the decision, its scope and locator.
+ISSUED = re.compile(r"已(?:经|正式)?(?:签发|签批|发放)|(?:签发|签批|签署)了?|正式(?:批准|发布)|获准")
+RECORD_PENDING = re.compile(r"草案|拟(?:定|签|于|发)|待(?:审批|批准|签|发|补|确认)|(?:尚)?未(?:获|经|完成)?(?:审批|批准|签|发)"
+                            r"|(?:已)?(?:作废|失效|过期|撤销)|不(?:予|得|可)(?:签|发|放行)")
+OBJECT_SCOPE = re.compile(r"(?:批准|授权|放行)(?:的)?(?:对象|范围)(?:为|是|包括|[:：])?\s*([^，,。]+)")
+CUTOVER_DECISION_REQUEST = re.compile(r"切换.{0,10}(?:批准|审批)|(?:批准|审批).{0,24}(?:正式)?切换")
+DECISION_TRAILING = re.compile(r"[，,]\s*(?:对照|比较|另行|另一个|仅供|附注)")
+CUTOVER_DATE_REQUEST = re.compile(r"日期|时间|时点|窗口|哪[天日]|几点|何时|什么时候")
+CUTOVER_ISSUE = re.compile(r"切换(?:审批单|批准单|决定|签批).{0,24}已(?:正式)?签发")
+RECORD_TYPES = (
+    (re.compile(r"(?:新|有效的?).{0,8}合格证.{0,8}(?:编号|号)"), r"合格证(?:书)?"),
+    (re.compile(r"客户.{0,8}(?:发放|放行|交付).{0,8}(?:单号|编号|签批|凭证)"), r"客户.{0,8}(?:发放|放行|交付)(?:单|凭证|签批)"),
+    (re.compile(r"(?:量产.{0,8}(?:放行|审批|签发)|(?:批准|放行)量产).{0,12}(?:单号|编号|签发单)"), r"量产(?:放行|批准|签发)(?:单|记录|凭证)"),
+)
+PROCEDURE_REQUEST = re.compile(r"(?:通用|正式|双签).{0,12}(?:规程|作业标准)|(?:规程|作业标准)(?:的)?正文")
+PROCEDURE_DIRECTIVE = re.compile(r"要求|必须|应当|不得|须|方可|才可|禁止")
+PROCEDURE_TEXT = re.compile(r"规程|作业标准|作业指导书|规范")
+LEAKAGE_RATE = r"(?:最大(?:允许)?)?泄漏率"
+LEAKAGE_BOUND = re.compile(
+    rf"(?:最大(?:允许)?泄漏率|泄漏率(?:的)?(?:上限|限值|不得超过|不大于|至多|[≤<]))"
+    rf"\s*(?:为|是|[:：])?\s*{NUMBER}"
 )
 ORDER_LINE = r"订单行|订单逐行|订单按行|订单每行|订单的.{0,8}行|(?:销售|客户)订单[^。！？；\n]{0,24}(?:逐行|各行|每行|分行)"
 OPEN_ORDER = r"(?:开放|未关闭|未完结)(?:的)?(?:销售)?订单行"
@@ -148,6 +170,66 @@ def _has_signed_cutover(text, sentences):
     )
 
 
+def _formal_requirements(query):
+    checks = []
+    references = set(PART_CODE.findall(query))
+    if CUTOVER_DECISION_REQUEST.search(query) and (references or not SIGNATURE.search(query)):
+        needs_date = CUTOVER_DATE_REQUEST.search(query)
+
+        def cutover(sentences):
+            for index, sentence in enumerate(sentences):
+                decision = DECISION_TRAILING.split(sentence, maxsplit=1)[0]
+                if RECORD_PENDING.search(decision) or not references.issubset(PART_CODE.findall(decision)):
+                    continue
+                if not (CUTOVER_ISSUE.search(decision) or (APPROVED.search(decision) and "切换" in decision)):
+                    continue
+                scope = OBJECT_SCOPE.search(decision)
+                if scope:
+                    other_ids = set(PART_CODE.findall(decision[scope.end():])) - set(PART_CODE.findall(scope[1]))
+                    if references.intersection(other_ids):
+                        continue
+                following = sentences[index + 1:index + 2]
+                if not needs_date or CUTOVER_TIME.search(decision) or any(
+                    CUTOVER_TIME.match(line.strip()) and not RECORD_PENDING.search(line)
+                    and set(PART_CODE.findall(line)).issubset(references)
+                    for line in following
+                ):
+                    return True
+            return False
+
+        checks.append(cutover)
+    for request, kind in RECORD_TYPES:
+        if request.search(query):
+            locator = re.compile(
+                rf"{kind}\s*(?:编号|号|[:：#])?\s*(?=[a-z0-9._-]*[0-9]){CODE}{CODE_END}"
+            )
+
+            def issued(sentences, locator=locator):
+                return any(
+                    ISSUED.search(sentence) and not RECORD_PENDING.search(sentence)
+                    and (match := locator.search(sentence))
+                    and references.issubset(PART_CODE.findall(sentence))
+                    and set(PART_CODE.findall(match[0])) - references
+                    for sentence in sentences
+                )
+
+            checks.append(issued)
+    if PROCEDURE_REQUEST.search(query):
+        checks.append(lambda sentences: any(
+            PROCEDURE_TEXT.search(sentence) and PROCEDURE_DIRECTIVE.search(sentence)
+            and ("清场" not in query or "清场" in sentence)
+            and ("双签" not in query or "双签" in sentence)
+            for sentence in sentences
+        ))
+    if re.search(LEAKAGE_RATE, query) and re.search(r"最大|上限|限值|判退", query):
+        checks.append(lambda sentences: any(
+            LEAKAGE_BOUND.search(sentence) and not RECORD_PENDING.search(sentence)
+            and references.issubset(PART_CODE.findall(sentence))
+            for sentence in sentences
+        ))
+    return checks
+
+
 def evidence_requirement(query):
     """Build checks only for scope or evidence explicitly requested in the query."""
     original_query = unicodedata.normalize("NFKC", query)
@@ -157,7 +239,11 @@ def evidence_requirement(query):
     named_plants = set(NAMED_PLANT.findall(query))
     plant_codes = PLANT_CODE.findall(query)
     plants = re.compile(rf"{CODE_START}(?:{'|'.join(map(re.escape, plant_codes))}){CODE_END}") if plant_codes else None
+    formal = _formal_requirements(query)
     asks_limit = bool(LIMIT_REQUEST.search(query) or GRAVITY_LIMIT_REQUEST.search(query))
+    if re.search(LEAKAGE_RATE, query) and not RESISTANCE_NAME.search(query):
+        # The metric-specific check binds the number to the requested measurement.
+        asks_limit = False
     asks_contract = bool(CONTRACT_REQUEST.search(query))
     asks_compensation = bool(CANCELLATION_REQUEST.search(query))
     asks_double_counting = _mentions_receipt_balances(query) and DOUBLE_COUNTING.search(query)
@@ -168,7 +254,7 @@ def evidence_requirement(query):
     stock_categories = set(STOCK_CATEGORIES.findall(query)) if re.search(r"可用(?:库存|量)", query) else set()
     if not (versions or rows or named_plants or plants or asks_limit or asks_contract or asks_compensation
             or asks_double_counting or asks_invoice_offset or asks_signed_cutover or order_evidence
-            or effectivity_evidence or stock_categories):
+            or effectivity_evidence or stock_categories or formal):
         return None
 
     resistance = set(RESISTANCE_NAME.findall(query))
@@ -194,6 +280,8 @@ def evidence_requirement(query):
         original = unicodedata.normalize("NFKC", text)
         sentences = SENTENCE.split(original)
         normalized_sentences = [sentence.casefold() for sentence in sentences]
+        if not all(check(normalized_sentences) for check in formal):
+            return False
         if not any(scope_matches(sentence) for sentence in normalized_sentences):
             return False
         if limit and not any(
