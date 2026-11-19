@@ -61,6 +61,17 @@ TEMPLATE_PATH = (
     / "bom-import-template"
     / "BOM工程变更数据导入模板.xlsx"
 )
+PUBLIC_TEMPLATES = {
+    "/api/import-template.xlsx": (TEMPLATE_PATH, "BOM-import-template.xlsx"),
+    "/api/procurement-template.xlsx": (
+        TEMPLATE_PATH.parent.parent / "b19-import-template" / "B19采购与到货导入示例.xlsx",
+        "B19-synthetic-import-example.xlsx",
+    ),
+    "/api/engineering-template.xlsx": (
+        TEMPLATE_PATH.parent.parent / "b22-import-template" / "engineering-example.xlsx",
+        "B22-engineering-example.xlsx",
+    ),
+}
 SNAPSHOT_BACKUPS_TO_KEEP = 3
 
 
@@ -192,10 +203,11 @@ class Download:
 
 
 JSON_POSTS = frozenset({
-    "/api/account/login", "/api/account/logout", "/api/account/role", "/api/workflow/dialogue", "/api/workflow/preflight", "/api/workflow/run",
+    "/api/workflow/dialogue", "/api/workflow/preflight", "/api/workflow/run",
     "/api/engineering-knowledge/index", "/api/engineering-knowledge/references", "/api/snapshot/start", "/api/analyze", "/api/analyze-batch",
     "/api/engineering-knowledge/assessment",
 })
+ACCOUNT_POSTS = frozenset({"/api/account/login", "/api/account/logout", "/api/account/role"})
 COMMAND_POSTS = frozenset({"/api/snapshot/finish", "/api/snapshot/abort", "/api/demo"})
 IMPORT_POSTS = frozenset({"/api/import/file", "/api/snapshot/finish", "/api/snapshot/abort"})
 BODY_TIMEOUT = 30
@@ -329,6 +341,40 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(route.query)
         if path == "/api/account":
             return {"configured": self.state.accounts.path is not None, "identity": self._identity()}
+        if path in PUBLIC_TEMPLATES:
+            template, filename = PUBLIC_TEMPLATES[path]
+            try:
+                body = template.read_bytes()
+            except FileNotFoundError as exc:
+                raise RequestError(404, "导入模板尚未生成") from exc
+            return Download(body, filename, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        if path in {"/api/engineering-knowledge", "/api/engineering-knowledge/references"}:
+            context = self._engineering_knowledge_context(route)
+            try:
+                if path.endswith("/references"):
+                    return workflow.engineering_references(repository, context)
+                return knowledge_store.library(repository)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                raise RequestError(503, "本机工程知识库暂不可用，请检查文件及其权限") from exc
+        if path in {"/api/engineering-knowledge/assessment", "/api/engineering-knowledge/report.md"}:
+            context = self._engineering_knowledge_context(route)
+            run_id = query["analysis_id"][0]
+            try:
+                assessment = workflow.engineering_assessment(repository, run_id, context)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                raise RequestError(503, "本机工程推论暂不可用") from exc
+            if path.endswith(".md"):
+                if not assessment["findings"] and not assessment["notice"]:
+                    raise RequestError(404, "本次核查尚未录用知识片段")
+                latest = repository.analysis_by_id(run_id)
+                if latest is None:
+                    raise RequestError(404, "尚未生成核查报告")
+                result, _ = latest
+                base = markdown_report(result, str(result.get("ai_explanation", "")))
+                body = workflow.engineering_report(base, assessment)
+                return Download(body.encode("utf-8"), "BOM-engineering-report.md")
+            return assessment
+        identity = self._require_identity()
         if path == "/api/status":
             return {
                 **repository.stats(), "privacy_mode": "敏感文字脱敏",
@@ -357,38 +403,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestError(404, "尚未完成影响核查")
             result, _ = latest
             report = markdown_report(result, str(result.get("ai_explanation", "")))
-            can_use_knowledge = self._is_engineer() and workflow.engineering_context(repository, result["analysis_id"]) is not None
+            can_use_knowledge = self._is_engineer(identity) and workflow.engineering_context(repository, result["analysis_id"]) is not None
             return {"result": {**result, "engineering_knowledge_available": can_use_knowledge}, "report": report}
         if path == "/api/change-log":
             return {"items": repository.change_logs()}
         if path == "/api/draft-defaults":
             return repository.draft_defaults()
-        if path in {"/api/engineering-knowledge", "/api/engineering-knowledge/references"}:
-            context = self._engineering_knowledge_context(route)
-            try:
-                if path.endswith("/references"):
-                    return workflow.engineering_references(repository, context)
-                return knowledge_store.library(repository)
-            except (OSError, ValueError, sqlite3.Error) as exc:
-                raise RequestError(503, "本机工程知识库暂不可用，请检查文件及其权限") from exc
-        if path in {"/api/engineering-knowledge/assessment", "/api/engineering-knowledge/report.md"}:
-            context = self._engineering_knowledge_context(route)
-            run_id = query["analysis_id"][0]
-            try:
-                assessment = workflow.engineering_assessment(repository, run_id, context)
-            except (OSError, ValueError, sqlite3.Error) as exc:
-                raise RequestError(503, "本机工程推论暂不可用") from exc
-            if path.endswith(".md"):
-                if not assessment["findings"] and not assessment["notice"]:
-                    raise RequestError(404, "本次核查尚未录用知识片段")
-                latest = repository.analysis_by_id(run_id)
-                if latest is None:
-                    raise RequestError(404, "尚未生成核查报告")
-                result, _ = latest
-                base = markdown_report(result, str(result.get("ai_explanation", "")))
-                body = workflow.engineering_report(base, assessment)
-                return Download(body.encode("utf-8"), "BOM-engineering-report.md")
-            return assessment
         if path in {"/api/workflow/run", "/api/workflow/report.md"}:
             run_id = query.get("run_id", [""])[0]
             saved = workflow.get_run(repository, run_id)
@@ -407,24 +427,6 @@ class Handler(BaseHTTPRequestHandler):
             result, _ = latest
             report = markdown_report(result, str(result.get("ai_explanation", "")))
             return Download(report.encode("utf-8"), "BOM-impact-report.md")
-        template_files = {
-            "/api/import-template.xlsx": (TEMPLATE_PATH, "BOM-import-template.xlsx"),
-            "/api/procurement-template.xlsx": (
-                TEMPLATE_PATH.parent.parent / "b19-import-template" / "B19采购与到货导入示例.xlsx",
-                "B19-synthetic-import-example.xlsx",
-            ),
-            "/api/engineering-template.xlsx": (
-                TEMPLATE_PATH.parent.parent / "b22-import-template" / "engineering-example.xlsx",
-                "B22-engineering-example.xlsx",
-            ),
-        }
-        if path in template_files:
-            template, filename = template_files[path]
-            try:
-                body = template.read_bytes()
-            except FileNotFoundError as exc:
-                raise RequestError(404, "导入模板尚未生成") from exc
-            return Download(body, filename, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         raise RequestError(404, "页面不存在")
 
     def _serve_asset(self, route_path: str) -> None:
@@ -458,11 +460,11 @@ class Handler(BaseHTTPRequestHandler):
     def _identity(self):
         return self.state.accounts.identity(self._session_token())
 
-    def _is_engineer(self):
-        identity = self._identity()
+    @staticmethod
+    def _is_engineer(identity):
         return bool(identity and identity["department"] == identity["active_role"] == "engineering")
 
-    def _workflow_identity(self):
+    def _require_identity(self):
         if self.state.accounts.path is None:
             return None
         identity = self._identity()
@@ -471,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
         return identity
 
     def _engineering_knowledge_context(self, route):
-        if not self._is_engineer():
+        if not self._is_engineer(self._identity()):
             raise RequestError(403, "需要使用工程部门账号并切换至工程角色")
         run_id = parse_qs(route.query).get("analysis_id", [""])[0]
         context = workflow.engineering_context(self.state.repository, run_id)
@@ -489,20 +491,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         ppt = path == "/api/engineering-knowledge/preview"
         upload = path == "/api/import/file"
-        if not (ppt or upload or path in JSON_POSTS or path in COMMAND_POSTS):
+        if not (ppt or upload or path in JSON_POSTS or path in COMMAND_POSTS or path in ACCOUNT_POSTS):
             self._error(404, "接口不存在")
             return
 
         # An upload belongs to the batch that existed when it began. This keeps
         # a late file or malformed request from affecting a replacement batch.
         batch = None
+        engineering_request = path.startswith("/api/engineering-knowledge/")
+        require_session = self.state.accounts.path is not None and not (engineering_request or path in ACCOUNT_POSTS)
         try:
-            if ppt or path.startswith("/api/engineering-knowledge/"):
-                with self.state.import_lock:
+            with self.state.import_lock:
+                if engineering_request:
                     self._engineering_knowledge_context(route)
-            if path in IMPORT_POSTS:
-                requested_batch = self.headers.get("X-BOM-Import-Batch")
-                with self.state.import_lock:
+                if require_session:
+                    self._require_identity()
+                if path in IMPORT_POSTS:
+                    requested_batch = self.headers.get("X-BOM-Import-Batch")
                     if requested_batch is not None and (
                         not requested_batch or requested_batch != self.state.staging_batch_id
                     ):
@@ -537,16 +542,18 @@ class Handler(BaseHTTPRequestHandler):
                     payload = self._read_json(length)
 
                 with self.state.import_lock:
+                    # A session can be revoked while the server reads a request body.
+                    identity = self._require_identity() if require_session else None
                     try:
                         if path in IMPORT_POSTS and batch is not self.state.staging_importer:
                             raise RequestError(409, "导入批次已变更，请重新选择文件")
-                        result = self._post_locked(route, payload, upload_path)
+                        result = self._post_locked(route, payload, upload_path, identity)
                     except Exception:
                         self._abort_matching_import(path, batch)
                         raise
         except RequestError as exc:
             self.close_connection = True
-            if batch is not None:
+            if batch is not None and exc.status != 401:
                 with self.state.import_lock:
                     self._abort_matching_import(path, batch)
             self._error(exc.status, str(exc))
@@ -568,7 +575,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.state.staging_importer is batch:
                 self.state.abort_import()
 
-    def _post_locked(self, route, payload, upload_path):
+    def _post_locked(self, route, payload, upload_path, identity):
         path = route.path
         if path == "/api/account/login":
             token = self.state.accounts.login(payload.get("username"), payload.get("password"))
@@ -580,19 +587,17 @@ class Handler(BaseHTTPRequestHandler):
             self.state.accounts.logout(self._session_token())
             return {}
         if path == "/api/account/role":
-            identity = self._workflow_identity()
+            identity = self._require_identity()
             if not identity or payload.get("role") not in identity["roles"]:
                 raise RequestError(403, "此账号未获该角色授权")
             role = payload["role"]
             token = self.state.accounts.switch_role(self._session_token(), identity, role)
             return {"token": token, "identity": {**identity, "active_role": role}}
         if path == "/api/workflow/dialogue":
-            identity = self._identity()
             return workflow_dialogue.collect(payload.get("messages"),
                                              active_role=identity["active_role"] if identity else None)
         if path == "/api/workflow/preflight":
             self.state.require_no_import()
-            identity = self._workflow_identity()
             if identity:
                 role = identity["active_role"]
                 if payload.get("role") not in (None, "", role):
@@ -602,7 +607,6 @@ class Handler(BaseHTTPRequestHandler):
                                     session_scope=self._session_token() if identity else "")
         if path == "/api/workflow/run":
             self.state.require_no_import()
-            identity = self._workflow_identity()
             requested = payload.get("context")
             if identity and isinstance(requested, dict) and requested.get("role") != identity["active_role"]:
                 raise RequestError(403, "核查角色已切换，请重新预检")
@@ -614,7 +618,7 @@ class Handler(BaseHTTPRequestHandler):
             output = workflow.finish(self.state.repository, context, item, account_managed=bool(identity))
             if payload.get("include_analysis") is True:
                 output["analysis"] = {
-                    "result": {**item["result"], "engineering_knowledge_available": context["role"] == "engineering" and self._is_engineer()},
+                    "result": {**item["result"], "engineering_knowledge_available": context["role"] == "engineering" and self._is_engineer(identity)},
                     "report": item["report"],
                 }
             return output

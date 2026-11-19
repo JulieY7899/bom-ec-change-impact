@@ -9,6 +9,7 @@ const state = {
   baseEcnSequence: 4,
   effectivityLookupSequence: 0,
   account: null,
+  accountReady: null,
   accountChanging: false,
   accountRevision: 0,
 };
@@ -25,18 +26,30 @@ function toast(message, isError = false) {
   toast.timer = setTimeout(() => node.classList.remove("show"), 3200);
 }
 
-function accountFetch(path, options = {}) {
+async function accountFetch(path, options = {}) {
   const token = sessionStorage.getItem("bom-session");
   if (!token) return fetch(path, options);
-  return fetch(path, {...options, headers: {...options.headers, Authorization: "Bearer " + token}});
+  const response = await fetch(path, {...options, headers: {...options.headers, Authorization: "Bearer " + token}});
+  if (response.status === 401 && path !== "/api/account/login" && token === sessionStorage.getItem("bom-session")) {
+    sessionStorage.removeItem("bom-session");
+    state.accountRevision++;
+    document.dispatchEvent(new Event("bom-knowledge-denied"));
+    location.reload();
+  }
+  return response;
 }
 
-async function api(path, options = {}) {
+function canReadBusinessData() {
+  return state.account && (!state.account.configured || Boolean(state.account.identity));
+}
+
+async function api(path, options = {}, responseType = "json") {
   const revision = state.accountRevision;
   const response = await accountFetch(path, options);
   if (revision === state.accountRevision && response.status === 403 && path.startsWith("/api/engineering-knowledge")) {
     document.dispatchEvent(new Event("bom-knowledge-denied"));
   }
+  if (response.ok && responseType === "blob") return response.blob();
   let payload;
   try {
     payload = await response.json();
@@ -45,6 +58,24 @@ async function api(path, options = {}) {
   }
   if (!response.ok) throw new Error(payload.error || `请求失败（${response.status}）`);
   return payload;
+}
+
+async function downloadMarkdown(path, filename, isCurrent) {
+  const revision = state.accountRevision;
+  const current = () => revision === state.accountRevision && !state.accountChanging && isCurrent();
+  if (!current()) return;
+  try {
+    const blob = await api(path, {}, "blob");
+    if (!current()) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    if (current()) toast(error.message, true);
+  }
 }
 
 const pageTitles = {
@@ -375,7 +406,6 @@ function resetSnapshotResults() {
   $("#report-result").classList.add("hidden");
   $("#report-empty").classList.remove("hidden");
   $("#report-content").replaceChildren();
-  $("#report-download").removeAttribute("href");
 }
 
 async function loadDemo() {
@@ -759,7 +789,6 @@ function selectBatchItem(index) {
   renderBatchSwitcher();
   renderAnalysis(item.result);
   renderReport(item.report, item.result);
-  $("#report-download").href = `/api/report.md?analysis_id=${encodeURIComponent(item.result.analysis_id)}`;
 }
 
 function renderBatchSwitcher() {
@@ -1787,6 +1816,7 @@ function setupAccount() {
     const { identity, configured } = data;
     const chosen = identity && roleLabel(identity.active_role);
     $("#account-panel").classList.toggle("hidden", !configured);
+    if (configured && !identity) $("#snapshot-state").textContent = "请登录查看数据";
     $("#account-label").textContent = identity ? identity.username + " · " + chosen : "账号登录";
     form.classList.toggle("hidden", Boolean(identity));
     $("#account-controls").classList.toggle("hidden", !identity);
@@ -1895,17 +1925,18 @@ function setupAccount() {
       message.textContent = error.message;
     }
   });
-  showAccount();
+  const ready = showAccount();
   const recheck = () => {
     if (!document.hidden && sessionStorage.getItem("bom-session")) showAccount();
   };
   document.addEventListener("visibilitychange", recheck);
   window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
   window.setInterval(recheck, 60000);
+  return ready;
 }
 
 function setup() {
-  setupAccount();
+  state.accountReady = setupAccount();
   $$(".nav-item").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
   $$("[data-jump]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.jump)));
   $("#choose-files").addEventListener("click", () => $("#file-input").click());
@@ -1921,6 +1952,11 @@ function setup() {
   });
   $("#engineering-row").addEventListener("change", fillEngineeringRow);
   $("#analyze-draft").addEventListener("click", analyzeDraft);
+  $("#report-download").addEventListener("click", () => {
+    const id = state.result?.analysis_id;
+    if (id) downloadMarkdown("/api/report.md?analysis_id=" + encodeURIComponent(id), "BOM-impact-report.md",
+      () => state.result?.analysis_id === id);
+  });
   $$('input[name="change_type"]').forEach((input) => input.addEventListener("change", updateChangeFields));
   $("#old-component").addEventListener("input", () => scheduleOriginalEffectivityLookup());
   $("#old-component").addEventListener("change", () => scheduleOriginalEffectivityLookup(0));
@@ -1951,7 +1987,7 @@ function setup() {
   $("#new-effective-date").value = today.toISOString().slice(0, 10);
   updateChangeFields();
   renderDraftItems();
-  refreshStatus();
+  state.accountReady.then(() => { if (canReadBusinessData()) refreshStatus(); });
 
   const updateTopbarScrollState = () => {
     const topbar = $(".topbar");
