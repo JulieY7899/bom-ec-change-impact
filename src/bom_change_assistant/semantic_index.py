@@ -65,7 +65,7 @@ class SemanticIndex:
                                         cache_dir=str(self.path / "runtime"))
         return self.encoder.embed(texts, batch_size=BATCH_SIZE)
 
-    def sync_and_search(self, db, query="", section=""):
+    def sync_and_search(self, db, query="", section="", *, required_evidence=None):
         """Caller holds the authoritative SQLite write lock through reconciliation and readback."""
         from qdrant_client import QdrantClient, models
 
@@ -101,7 +101,16 @@ class SemanticIndex:
                 client.delete(COLLECTION, models.PointIdsList(points=sorted(obsolete)), wait=True)
             if not query or not approved:
                 return []
-            scope = models.Filter(must=[models.FieldCondition(key="section", match=models.MatchValue(value=section))]) if section else None
+            conditions = []
+            if section:
+                conditions.append(models.FieldCondition(key="section", match=models.MatchValue(value=section)))
+            if required_evidence:
+                eligible = [key for key, row in approved.items()
+                            if (not section or section == row[2]) and required_evidence(row[6])]
+                if not eligible:
+                    return []
+                conditions.append(models.HasIdCondition(has_id=eligible))
+            scope = models.Filter(must=conditions) if conditions else None
             vector = next(iter(self.encode(["为这个句子生成表示以用于检索相关文章：" + semantic_text(query)])))
             hits = client.query_points(COLLECTION, query=vector.tolist(), query_filter=scope,
                                        score_threshold=MIN_SCORE, limit=3, with_payload=False).points
