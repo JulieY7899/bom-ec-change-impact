@@ -90,25 +90,24 @@ for (const quantity of ['20', '0', '待补数据']) {
 }
 console.log('Procurement UI verified: quantity, zero, unknown, scope, evidence, review roles and unapproved action in both views; input stays text.');
 // Exercise the real import workflow: a failed batch retains the old report;
-// a successful publication must stop showing links into the previous snapshot.
+// a successful publication must clear the report for the previous snapshot.
 (async () => {
   for (const fails of [true, false]) {
     const calls = [];
-    context.document.querySelector('#report-download').removeAttribute = function(key) { delete this[key]; };
     context.calls = calls;
     context.failImport = fails;
     vm.runInContext(`
       state.files = [{name: 'synthetic.xlsx'}];
       state.result = {analysis_id: 'OLD'}; state.report = 'old report';
-      state.batchItems = []; document.querySelector('#report-download').href = '/old-report';
+      state.batchItems = []; document.querySelector('#report-content').textContent = 'old report';
       api = async (path) => { calls.push(path); if (failImport && path === '/api/import/file') throw Error('bad workbook'); return {}; };
       refreshStatus = async () => {}; chooseFiles = () => {}; toast = () => {};
     `, context);
     await vm.runInContext('importFiles()', context);
     assert.equal(vm.runInContext('state.result?.analysis_id ?? null', context), fails ? 'OLD' : null);
     assert.equal(vm.runInContext('state.report', context), fails ? 'old report' : '');
-    assert.equal(hosts.get('#report-download').href, fails ? '/old-report' : undefined);
+    assert.equal(hosts.get('#report-content').textContent, fails ? 'old report' : '');
     assert.ok(calls.includes(fails ? '/api/snapshot/abort' : '/api/snapshot/finish'));
   }
-  console.log('Import UI verified: failures preserve the old report; successful publication clears stale results and links.');
+  console.log('Import UI verified: failures preserve the old report; successful publication clears stale results and report content.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

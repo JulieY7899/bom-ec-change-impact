@@ -171,7 +171,6 @@ function setupWorkflow() {
     for (const fact of data.answer.facts) answer.append(element("p", fact));
     for (const action of data.answer.review_actions) answer.append(element("p", "待业务复核 · " + action));
     $("#workflow-report").textContent = data.report;
-    $("#workflow-download").href = "/api/workflow/report.md?run_id=" + encodeURIComponent(data.run_id);
     output.classList.remove("hidden");
   }
 
@@ -194,6 +193,12 @@ function setupWorkflow() {
     }
   });
 
+  $("#workflow-download").addEventListener("click", () => {
+    const run = displayedRun;
+    if (run) downloadMarkdown("/api/workflow/report.md?run_id=" + encodeURIComponent(run), "BOM-workflow-report.md",
+      () => displayedRun === run && !output.classList.contains("hidden"));
+  });
+
   $("#workflow-open-analysis").addEventListener("click", async () => {
     const run = displayedRun;
     const revision = state.accountRevision;
@@ -212,7 +217,9 @@ function setupWorkflow() {
   refreshFields();
   setupEngineeringKnowledge(post, element);
   const revision = draftRevision;
-  api("/api/workflow/run").then((data) => {
+  state.accountReady.then(async () => {
+    if (!canReadBusinessData()) return;
+    const data = await api("/api/workflow/run");
     if (data.run_id && revision === draftRevision) showResult(data);
   }).catch((error) => {
     if (revision === draftRevision) preflight.textContent = error.message;
@@ -303,28 +310,12 @@ function setupEngineeringKnowledge(post, element) {
   }
 
   clearAssessment.addEventListener("click", () => updateAssessment([]));
-  downloadReport.addEventListener("click", async () => {
+  downloadReport.addEventListener("click", () => {
     const id = state.result?.analysis_id;
     const revision = assessmentRevision;
     const accountRevision = state.accountRevision;
-    try {
-      const response = await accountFetch(endpoint("/report.md", id));
-      if (response.status === 403 && assessmentCurrent(id, revision, accountRevision)) {
-        reset();
-        return;
-      }
-      if (!response.ok) throw new Error("工程报告下载失败，请重新打开报告后再试");
-      const blob = await response.blob();
-      if (!assessmentCurrent(id, revision, accountRevision)) return;
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "BOM-engineering-report.md";
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) {
-      if (assessmentCurrent(id, revision, accountRevision)) toast(error.message, true);
-    }
+    if (id) downloadMarkdown(endpoint("/report.md", id), "BOM-engineering-report.md",
+      () => assessmentCurrent(id, revision, accountRevision));
   });
 
   function reset() {

@@ -183,7 +183,7 @@
             <h2>最近一次核查结果</h2>
             <div class="action-row">
               <button class="button secondary" type="button" id="workflow-open-analysis">查看 03 影响核查</button>
-              <a class="button secondary" id="workflow-download" download>下载工作流报告</a>
+              <button class="button secondary" type="button" id="workflow-download">下载工作流报告</button>
             </div>
           </div>
           <ol class="workflow-steps" id="workflow-steps"></ol>
@@ -622,7 +622,7 @@
           <div class="result-head">
             <div><p class="kicker">核查报告</p><h2>工程变更影响核查报告</h2><p>报告根据当前核查结果生成；保留业务编号，敏感名称统一显示为 XXX。</p></div>
             <div class="action-row">
-              <a class="button primary" id="report-download" href="/api/report.md" download>下载报告（Markdown）</a>
+              <button class="button primary" type="button" id="report-download">下载报告（Markdown）</button>
               <button class="button secondary hidden" type="button" id="engineering-report-download">下载含工程推论的报告</button>
             </div>
           </div>
@@ -634,7 +634,7 @@
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="/app.js?v=engineering-assessment"></script>
-  <script src="/workflow.js?v=engineering-assessment"></script>
+  <script src="/app.js?v=account-read-auth"></script>
+  <script src="/workflow.js?v=account-read-auth"></script>
 </body>
 </html>

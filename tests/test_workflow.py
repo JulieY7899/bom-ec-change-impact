@@ -491,6 +491,88 @@ class WorkflowTests(unittest.TestCase):
                 denied = self.request(self.knowledge_url(run_id, route), method=method, status=403)
                 self.assertNotIn(REVIEWED, str(denied))
 
+    def test_account_mode_requires_session_for_business_reads(self):
+        self.import_bom(engineering=True)
+        run_id = self.engineering_run()
+        routes = (
+            "/api/status",
+            "/api/engineering-versions",
+            "/api/materials",
+            "/api/material-effectivity?material=PART-OLD",
+            "/api/draft-defaults",
+            "/api/change-log",
+            "/api/analysis/last",
+            f"/api/analysis/by-id?analysis_id={run_id}",
+            "/api/report.md",
+            f"/api/report.md?analysis_id={run_id}",
+            "/api/workflow/run",
+            f"/api/workflow/run?run_id={run_id}",
+            f"/api/workflow/report.md?run_id={run_id}",
+        )
+        standalone = {route: self.request(route, method="GET") for route in routes}
+
+        self.login_as("procurement")
+        for route, expected in standalone.items():
+            with self.subTest(session="procurement", route=route):
+                self.assertEqual(self.request(route, method="GET"), expected)
+        self.request(self.knowledge_url(run_id, "/report.md"), method="GET", status=403)
+
+        post_routes = (
+            "/api/analyze", "/api/analyze-batch", "/api/workflow/dialogue", "/api/workflow/preflight",
+            "/api/workflow/run", "/api/snapshot/start", "/api/import/file",
+            "/api/snapshot/finish", "/api/snapshot/abort", "/api/demo",
+        )
+
+        def assert_locked(session):
+            for method, endpoints in (("GET", routes), ("POST", post_routes)):
+                for route in endpoints:
+                    with self.subTest(session=session, method=method, route=route):
+                        response = self.request(route, method=method, status=401)
+                        self.assertEqual(response, {"ok": False, "error": "请从右上角登录账号"})
+
+        self.token = ""
+        self.assertTrue(self.request("/api/health", method="GET")["ok"])
+        self.assertIn('id="account-login"', self.request("/", method="GET"))
+        self.assertEqual(self.request("/api/account", method="GET"),
+                         {"ok": True, "configured": True, "identity": None})
+        assert_locked("missing")
+        self.token = "invalid"
+        assert_locked("invalid")
+
+        self.login_as("procurement")
+        self.request("/api/account/logout")
+        assert_locked("logged-out")
+
+        self.login_as("procurement")
+        session = self.state.accounts.sessions[self.token]
+        self.state.accounts.sessions[self.token] = replace(session, deadline=0)
+        assert_locked("expired")
+
+        self.login_as("procurement")
+        set_account(self.accounts, "procurement", "planning", secrets.token_urlsafe(24))
+        assert_locked("membership-changed")
+
+    def test_revoked_upload_session_preserves_the_active_import(self):
+        self.login_as("procurement")
+        batch_id = self.request("/api/snapshot/start", {"expected_files": 1})["batch_id"]
+        path = self.root / "fixture.xlsx"
+        workbook(path, [OLD_BOM])
+        read_body = Handler._read_body
+
+        def read_then_revoke(handler, length, output):
+            read_body(handler, length, output)
+            with self.state.import_lock:
+                self.state.accounts.logout(self.token)
+
+        with patch.object(Handler, "_read_body", read_then_revoke):
+            self.request("/api/import/file", path.read_bytes(), status=401)
+        self.assertEqual(self.state.staging_batch_id, batch_id)
+        self.assertEqual(self.state.imported_files, 0)
+
+        self.login_as("procurement")
+        self.request("/api/import/file", path.read_bytes())
+        self.assertTrue(self.request("/api/snapshot/finish")["stats"]["ready"])
+
     def test_sessions_fail_closed_after_logout_expiry_and_account_change(self):
         self.import_bom()
         run = self.engineering_run()
@@ -532,6 +614,7 @@ class WorkflowTests(unittest.TestCase):
         self.preflight(role="engineering", status=403)
         self.token = old_token
         self.request(route, method="GET", status=403)
+        self.request("/api/report.md?analysis_id=" + run_id, method="GET", status=401)
         self.preflight(status=401)
         self.token = current_token
 
