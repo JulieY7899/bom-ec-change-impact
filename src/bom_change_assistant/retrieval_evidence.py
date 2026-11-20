@@ -157,16 +157,21 @@ MEASURE_UNITS = (
     (r"同轴度", r"mm|毫米"),
     (r"响应(?:时间|时长)?", r"ms|毫秒|s|秒"),
     (r"(?:光源)?亮度", r"%|cd/m²|cd/m2"),
+    (r"温升", r"k|开尔文|°c|摄氏度"),
+    (r"泄漏率", r"ml\s*/\s*min|毫升\s*/\s*分钟|毫升每分钟"),
 )
 LOWER_LIMIT = r"下限|最低(?:允许)?|最小(?:允许)?|不(?:得|能)?低于|至少|不小于|≥|>="
 UPPER_LIMIT = r"上限|最高(?:允许)?|最大(?:允许)?|最多(?:允许)?|不(?:得|能)?(?:超过|高于)|至多|不大于|≤|<="
-NEUTRAL_LIMIT = r"限值|公差|合格界限|合格线|验收标准"
-LIMIT_AUTHORITY = re.compile(r"已(?:发布|签发|生效)|现行版|检验规范|(?:验收|放行)(?:条件|标准)|合格界限|条款规定")
-LIMIT_NOT_EFFECTIVE = re.compile(r"已停用|征求意见|待(?:评审|审定)|未(?:批准|生效|设|规定)|仅供|不(?:适用|作为)|草案")
+NEUTRAL_LIMIT = r"限值|公差|合格界限|合格线|验收标准|判退线"
+LIMIT_AUTHORITY = re.compile(
+    rf"已(?:发布|签发|生效)|现行(?:版|条款|规格|验收|\s*{VERSION.pattern})"
+    r"|检验规范|(?:验收|放行)(?:条件|标准|文件|规范)|合格界限|条款规定|另列.{0,20}(?:上限|下限)"
+)
+LIMIT_NOT_EFFECTIVE = re.compile(r"已停用|停止使用|停止作为|征求意见|待(?:评审|审定)|未(?:批准|生效|设|规定)|仅供|不(?:适用|作为)|草案")
 LIMIT_OBSERVATION = re.compile(r"实测|记录值|实测均值|原始读数|量程|控制目标|调试目标|试设")
 LIMIT_CONDITIONS = (
     r"热老化(?:后)?|老化后", r"暖机(?:后)?", r"冷启动", r"常温|室温", r"低温",
-    r"干态", r"湿态",
+    r"干态", r"湿态|淋湿",
 )
 LIMIT_STATISTICS = (r"平均(?:值)?|均值", r"单次|每次|各次")
 CELSIUS = re.compile(r"(?<![0-9.])[+−-]?[0-9]+(?:\.[0-9]+)?\s*°\s*c")
@@ -378,11 +383,15 @@ def _decision_requirements(query, references):
 
 
 def _quantitative_requirement(query):
-    direction = [marker for marker in (LOWER_LIMIT, UPPER_LIMIT) if re.search(marker, query)]
+    both_bounds = "上下限" in query or bool(re.search(r"上、下限|两(?:个)?界限", query))
+    direction = [marker for marker in (LOWER_LIMIT, UPPER_LIMIT) if both_bounds or re.search(marker, query)]
     if not direction and not re.search(NEUTRAL_LIMIT, query):
         return None
     measures = [(metric, unit) for metric, unit in MEASURE_UNITS if re.search(metric, query)]
     if not measures:
+        return None
+    # Retain the existing leakage-bound evidence path for requests without an explicit condition.
+    if re.search(LEAKAGE_RATE, query) and not CELSIUS.search(query) and len(measures) == 1:
         return None
     comparator = "|".join(direction or (LOWER_LIMIT, UPPER_LIMIT, NEUTRAL_LIMIT))
     conditions = [condition for condition in LIMIT_CONDITIONS if re.search(condition, query)]
@@ -391,13 +400,24 @@ def _quantitative_requirement(query):
     references = set(PART_CODE.findall(query)) | set(VERSION.findall(query))
 
     after = r"\s*(?:为|是|定为|[:：])?\s*"
-    bounds = [
-        re.compile(
-            rf"(?:(?:{metric})(?:的)?(?:合格界限为|应|必须)?\s*(?:{comparator})|"
-            rf"(?:{comparator})\s*(?:{metric})){after}[+−-]?{NUMBER}\s*(?:{unit})(?![a-z])"
+    bounds = []
+    for metric, unit in measures:
+        value = rf"[+−-]?{NUMBER}\s*(?:{unit})(?![a-z])"
+        labeled_bound = (
+            rf"(?:(?:{metric})(?:的)?(?:合格界限为|应|须|必须)?\s*(?:{comparator})|"
+            rf"(?:{comparator})\s*(?:{metric})){after}{value}"
         )
-        for metric, unit in measures
-    ]
+        # An explicit heading can introduce an inequality stated after a colon.
+        bounds.append(re.compile(labeled_bound))
+        if not direction or UPPER_LIMIT in direction:
+            bounds.append(re.compile(
+                rf"(?:{metric})(?:的)?(?:{UPPER_LIMIT})\s*[:：][^。；]{{0,40}}"
+                rf"(?:须在\s*{value}\s*(?:以)?内|(?:不得超过|不高于)\s*{value})"
+            ))
+        if not direction or LOWER_LIMIT in direction:
+            bounds.append(re.compile(
+                rf"(?:{metric})(?:的)?(?:{LOWER_LIMIT})\s*[:：][^。；]{{0,40}}(?:不得低于|不低于)\s*{value}"
+            ))
 
     def qualifies(sentences):
         for index, clause in enumerate(sentences):
@@ -453,7 +473,7 @@ def _procedure_requirement(query, references):
     return qualifies
 
 
-def _formal_requirements(query):
+def _formal_requirements(query, quantitative=None):
     references = set(PART_CODE.findall(query))
     checks = _decision_requirements(query, references)
     if CUTOVER_DECISION_REQUEST.search(query) and (references or not SIGNATURE.search(query)):
@@ -501,7 +521,7 @@ def _formal_requirements(query):
             checks.append(issued)
     if PROCEDURE_REQUEST.search(query):
         checks.append(_procedure_requirement(query, references))
-    if re.search(LEAKAGE_RATE, query) and re.search(r"最大|上限|限值|判退", query):
+    if not quantitative and re.search(LEAKAGE_RATE, query) and re.search(r"最大|上限|限值|判退", query):
         checks.append(lambda sentences: any(
             LEAKAGE_BOUND.search(sentence) and not RECORD_PENDING.search(sentence)
             and references.issubset(PART_CODE.findall(sentence))
@@ -576,10 +596,10 @@ def evidence_requirement(query):
     named_plants = set(NAMED_PLANT.findall(query))
     plant_codes = PLANT_CODE.findall(query)
     plants = re.compile(rf"{CODE_START}(?:{'|'.join(map(re.escape, plant_codes))}){CODE_END}") if plant_codes else None
-    formal = _formal_requirements(query)
+    quantitative = _quantitative_requirement(query)
+    formal = _formal_requirements(query, quantitative)
     context = _context_requirements(query)
     asks_limit = bool(LIMIT_REQUEST.search(query) or GRAVITY_LIMIT_REQUEST.search(query))
-    quantitative = _quantitative_requirement(query)
     if quantitative:
         formal.append(quantitative)
         asks_limit = False

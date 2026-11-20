@@ -196,3 +196,19 @@ class ApprovalEffectivityTests(unittest.TestCase):
         qualifies = evidence_requirement("BX-428 已批准 PC-691 投入连续流水线量产的记录在哪？")
         self.assertTrue(qualifies("PC-691 的量产放行单 BX-428 已正式签发。"))
         self.assertFalse(qualifies("BX-428 批准 PC-691 在台架完成量产样品试装。"))
+
+
+class FormalBoundContextTests(unittest.TestCase):
+    def test_explicit_leakage_condition_requires_the_upper_limit_at_that_temperature(self):
+        qualifies = evidence_requirement("检验件 TK-844 在 13 ℃ 下的泄漏率上限是多少毫升每分钟？")
+        self.assertTrue(qualifies("现行验收规范规定 TK-844 在 13 ℃ 时最大允许泄漏率为 0.8 mL/min。"))
+        self.assertFalse(qualifies("现行验收规范规定 TK-844 在 30 ℃ 时最大允许泄漏率为 0.8 mL/min。"))
+        self.assertFalse(qualifies("现行验收规范规定 TK-844 在 13 ℃ 时最大允许压差为 0.8 kPa。"))
+        self.assertFalse(qualifies("TK-844 在 13 ℃ 时实测最大泄漏率为 0.8 mL/min。"))
+
+    def test_both_bounds_accept_independent_operative_clauses(self):
+        qualifies = evidence_requirement("LC-318 冷启动单次响应的上下限各是多少？")
+        self.assertTrue(qualifies("现行条款 LC-318 规定冷启动单次响应不得低于 45 ms。"))
+        self.assertTrue(qualifies("LC-318 另列冷启动单次响应的上限：每次须在 180 ms 内响应。"))
+        self.assertFalse(qualifies("LC-318 另列暖机后单次响应的上限：每次须在 180 ms 内响应。"))
+        self.assertFalse(qualifies("LC-318 另列冷启动单次响应的上限：每次不得低于 180 ms。"))
