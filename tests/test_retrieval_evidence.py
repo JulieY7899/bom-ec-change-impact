@@ -238,6 +238,23 @@ class FormalBoundContextTests(unittest.TestCase):
         self.assertFalse(qualifies("现行验收规范规定 TK-844 在 13 ℃ 时最大允许压差为 0.8 kPa。"))
         self.assertFalse(qualifies("TK-844 在 13 ℃ 时实测最大泄漏率为 0.8 mL/min。"))
 
+    def test_measurement_limits_keep_direction_duration_and_state(self):
+        qualifies = evidence_requirement("扣座 RH-318 横向压紧保持一分钟的渗液量上限是多少？")
+        self.assertTrue(qualifies("正式放行细则规定 RH-318 横向压紧保持60秒，渗液量上限为0.8 mL。"))
+        for text in (
+            "正式放行细则规定 RH-318 立向压紧保持60秒，渗液量上限为0.8 mL。",
+            "正式放行细则规定 RH-318 横向压紧保持30秒，渗液量上限为0.8 mL。",
+            "正式放行细则规定 RH-318 横向压紧保持60秒，渗液量下限为0.8 mL。",
+            "正式放行细则未签草案中 RH-318 横向保持60秒的渗液量上限为0.8 mL。",
+        ):
+            self.assertFalse(qualifies(text), text)
+
+    def test_explicit_limit_value_allows_equivalent_units(self):
+        qualifies = evidence_requirement("回温十分钟后回弹间隙不得小于250微米的正式限值在哪里？")
+        self.assertTrue(qualifies("正式验收文件规定，回温十分钟后回弹间隙下限为零点二五毫米。"))
+        self.assertFalse(qualifies("正式验收文件规定，回温十分钟后回弹间隙下限为0.35 mm。"))
+        self.assertFalse(qualifies("正式验收文件规定，未回温时回弹间隙下限为0.25 mm。"))
+
     def test_both_bounds_accept_independent_operative_clauses(self):
         qualifies = evidence_requirement("LC-318 冷启动单次响应的上下限各是多少？")
         self.assertTrue(qualifies("现行条款 LC-318 规定冷启动单次响应不得低于 45 ms。"))

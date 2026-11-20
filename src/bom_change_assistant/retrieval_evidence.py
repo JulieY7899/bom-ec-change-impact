@@ -2,6 +2,7 @@
 import re
 import unicodedata
 from datetime import date
+from decimal import Decimal
 
 CODE = r"[a-z0-9]+(?:[-_.][a-z0-9]+)*"
 CODE_START = r"(?<![a-z0-9._-])"
@@ -163,19 +164,25 @@ MEASURE_UNITS = (
     (r"压力保持率|保压保持率", r"%|百分比"),
     (r"脱开力|拔出力|拉脱力", r"n|牛顿?"),
     (r"同轴度", r"mm|毫米"),
+    (r"启动摩擦力|起动摩擦力", r"n|牛顿?"),
+    (r"回弹间隙", r"mm|毫米|μm|微米"),
+    (r"阻抗", r"ω|欧姆?"),
+    (r"渗液量", r"ml|毫升"),
+    (r"横向摆幅", r"mm|毫米|μm|微米"),
     (r"响应(?:时间|时长)?", r"ms|毫秒|s|秒"),
     (r"(?:光源)?亮度", r"%|cd/m²|cd/m2"),
     (r"温升", r"k|开尔文|°c|摄氏度"),
     (r"泄漏率", r"ml\s*/\s*min|毫升\s*/\s*分钟|毫升每分钟"),
 )
-LOWER_LIMIT = r"下限|最低(?:允许)?|最小(?:允许)?|不(?:得|能)?低于|至少|不小于|≥|>="
-UPPER_LIMIT = r"上限|最高(?:允许)?|最大(?:允许)?|最多(?:允许)?|不(?:得|能)?(?:超过|高于)|至多|不大于|≤|<="
+LOWER_LIMIT = r"下限|最低(?:允许)?|最小(?:允许)?|不(?:得|能)?低于|至少|不(?:得|能)?小于|≥|>="
+UPPER_LIMIT = r"上限|最高(?:允许)?|最大(?:允许)?|最多(?:允许)?|不(?:得|能)?(?:超过|高于)|至多|不(?:得|能)?大于|≤|<="
 NEUTRAL_LIMIT = r"限值|公差|合格界限|合格线|验收标准|判退线"
 LIMIT_AUTHORITY = re.compile(
     rf"已(?:发布|签发|生效)|现行(?:版|条款|规格|验收|\s*{VERSION.pattern})"
-    r"|检验规范|(?:验收|放行)(?:条件|标准|文件|规范)|合格界限|条款规定|另列.{0,20}(?:上限|下限)"
+    r"|检验规范|(?:正式|当前)(?:检验令|验收令|放行细则|放行验收表)"
+    r"|(?:验收|放行)(?:条件|标准|文件|规范)|合格界限|条款规定|另列.{0,20}(?:上限|下限)"
 )
-LIMIT_NOT_EFFECTIVE = re.compile(r"已停用|停止使用|停止作为|征求意见|待(?:评审|审定)|未(?:批准|生效|设|规定)|仅供|不(?:适用|作为)|草案")
+LIMIT_NOT_EFFECTIVE = re.compile(r"已停用|停止使用|停止作为|征求意见|讨论稿|未签|待(?:评审|审定)|未(?:批准|生效|设|规定)|仅供|不(?:适用|作为)|草案")
 LIMIT_OBSERVATION = re.compile(r"实测|记录值|实测均值|原始读数|量程|控制目标|调试目标|试设")
 LIMIT_CONDITIONS = (
     r"热老化(?:后)?|老化后", r"暖机(?:后)?", r"冷启动", r"常温|室温", r"低温",
@@ -500,8 +507,55 @@ def _decision_requirements(query, references):
     return checks
 
 
+CHINESE_DECIMAL = re.compile(r"[〇零一二两三四五六七八九]点[〇零一二三四五六七八九]+")
+CHINESE_DIGITS = str.maketrans("〇零一二两三四五六七八九点", "001223456789.")
+DURATION = re.compile(rf"(?<![0-9.])({NUMBER}|[一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九])\s*(小时|分钟|秒)(?!钟?响应)")
+CONDITION_VALUES = {
+    "湿度": re.compile(rf"({NUMBER})\s*%\s*(?:相对)?湿度"),
+    "测量频率": re.compile(rf"({NUMBER})\s*khz"),
+    "预紧扭矩": re.compile(rf"({NUMBER})\s*n[ ·⋅.]*m\s*预紧"),
+}
+CONDITION_STATES = (
+    (r"回温(?!前)|复温(?!前)", r"(?:尚)?未回温|回温前|未复温"),
+    (r"(?:带|保留|有)防护膜", r"(?:去|移除|无|撕除)防护膜"),
+    (r"立向|竖向|纵向", r"横向(?=压紧)|水平(?=压紧)"),
+)
+
+
+def _measurement_text(text):
+    return CHINESE_DECIMAL.sub(lambda match: match[0].translate(CHINESE_DIGITS), text)
+
+
+def _duration_values(text):
+    amounts = set()
+    for number, unit in DURATION.findall(text):
+        if "十" in number:
+            tens, ones = number.split("十")
+            amount = 10 * int(tens.translate(CHINESE_DIGITS) or 1) + int(ones.translate(CHINESE_DIGITS) or 0)
+        else:
+            amount = Decimal(number.translate(CHINESE_DIGITS).replace(",", ""))
+        amounts.add(amount * {"小时": 3600, "分钟": 60, "秒": 1}[unit])
+    return amounts
+
+
+def _condition_state(text, present, absent):
+    if re.search(absent, text):
+        return False
+    if re.search(present, text):
+        return True
+    return None
+
+
+def _bound_quantity(amount, unit):
+    value = Decimal(amount.replace(",", "").replace("−", "-"))
+    unit = {"毫米": "mm", "微米": "μm", "欧": "ω", "欧姆": "ω", "牛": "n",
+            "牛顿": "n", "毫升": "ml"}.get(unit, unit)
+    return (value / 1000, "mm") if unit == "μm" else (value, unit)
+
+
 def _quantitative_requirement(query):
-    both_bounds = "上下限" in query or bool(re.search(r"上、下限|两(?:个)?界限", query))
+    query = _measurement_text(query)
+    both_bounds = bool(re.search(r"上下限|上、下限|两(?:个)?界限|区间两端|验收区间|允许范围|区间(?:上限和下限|下限和上限)", query))
     direction = [marker for marker in (LOWER_LIMIT, UPPER_LIMIT) if both_bounds or re.search(marker, query)]
     if not direction and not re.search(NEUTRAL_LIMIT, query):
         return None
@@ -517,29 +571,43 @@ def _quantitative_requirement(query):
     temperatures = {re.sub(r"\s+", "", value).replace("−", "-") for value in CELSIUS.findall(query)}
     references = set(PART_CODE.findall(query)) | set(VERSION.findall(query))
 
+    duration = _duration_values(query)
+    requested_values = [(pattern, {Decimal(value.replace(",", "")) for value in pattern.findall(query)})
+                        for pattern in CONDITION_VALUES.values()]
+    required_states = [(present, absent, state) for present, absent in CONDITION_STATES
+                       if (state := _condition_state(query, present, absent)) is not None]
     after = r"\s*(?:为|是|定为|[:：])?\s*"
     bounds = []
     for metric, unit in measures:
-        value = rf"[+−-]?{NUMBER}\s*(?:{unit})(?![a-z])"
+        value = rf"(?P<value>[+−-]?{NUMBER})\s*(?P<unit>{unit})(?![a-z·])"
+        requested_quantities = {
+            _bound_quantity(match["value"], match["unit"])
+            for match in re.finditer(value, query)
+        } if not re.search(r"何值|多少|哪两个", query) else set()
         labeled_bound = (
             rf"(?:(?:{metric})(?:的)?(?:合格界限为|应|须|必须)?\s*(?:{comparator})|"
             rf"(?:{comparator})\s*(?:{metric})){after}{value}"
         )
         # An explicit heading can introduce an inequality stated after a colon.
-        bounds.append(re.compile(labeled_bound))
+        bounds.append((re.compile(labeled_bound), requested_quantities))
         if not direction or UPPER_LIMIT in direction:
-            bounds.append(re.compile(
+            bounds.append((re.compile(
                 rf"(?:{metric})(?:的)?(?:{UPPER_LIMIT})\s*[:：][^。；]{{0,40}}"
-                rf"(?:须在\s*{value}\s*(?:以)?内|(?:不得超过|不高于)\s*{value})"
-            ))
+                rf"(?:须在\s*|(?:不得超过|不高于)\s*){value}(?:\s*(?:以)?内)?"
+            ), requested_quantities))
         if not direction or LOWER_LIMIT in direction:
-            bounds.append(re.compile(
+            bounds.append((re.compile(
                 rf"(?:{metric})(?:的)?(?:{LOWER_LIMIT})\s*[:：][^。；]{{0,40}}(?:不得低于|不低于)\s*{value}"
-            ))
+            ), requested_quantities))
 
     def qualifies(sentences):
+        sentences = [_measurement_text(s) for s in sentences]
         for index, clause in enumerate(sentences):
-            if not any(bound.search(clause) for bound in bounds):
+            if not any(
+                (match := bound.search(clause))
+                and (not quantities or _bound_quantity(match["value"], match["unit"]) in quantities)
+                for bound, quantities in bounds
+            ):
                 continue
             if LIMIT_NOT_EFFECTIVE.search(clause) or LIMIT_OBSERVATION.search(clause):
                 continue
@@ -561,6 +629,14 @@ def _quantitative_requirement(query):
                 continue
             actual = {re.sub(r"\s+", "", value).replace("−", "-") for value in CELSIUS.findall(scope)}
             if temperatures and temperatures.isdisjoint(actual):
+                continue
+            if duration and duration.isdisjoint(_duration_values(clause)):
+                continue
+            if any(values and values.isdisjoint(Decimal(value.replace(",", "")) for value in pattern.findall(clause))
+                   for pattern, values in requested_values):
+                continue
+            if any(_condition_state(clause, present, absent) is not state
+                   for present, absent, state in required_states):
                 continue
             return True
         return False
