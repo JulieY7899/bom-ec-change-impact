@@ -364,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError, sqlite3.Error) as exc:
                 raise RequestError(503, "本机工程推论暂不可用") from exc
             if path.endswith(".md"):
-                if not assessment["findings"] and not assessment["notice"]:
+                if not (assessment["findings"] or assessment["notice"] or assessment.get("approval")):
                     raise RequestError(404, "本次核查尚未录用知识片段")
                 latest = repository.analysis_by_id(run_id)
                 if latest is None:
@@ -625,7 +625,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/engineering-knowledge/references":
             context = self._engineering_knowledge_context(route)
             return workflow.engineering_references(self.state.repository, context, payload.get("query", ""),
-                                                   payload.get("section", ""))
+                                                   payload.get("section", ""),
+                                                   approval_scope=payload.get("approval_scope"))
         if path == "/api/engineering-knowledge/assessment":
             context = self._engineering_knowledge_context(route)
             self.state.require_no_import()
@@ -633,7 +634,8 @@ class Handler(BaseHTTPRequestHandler):
             references = payload.get("references")
             if not isinstance(references, list):
                 raise ValueError("请选择已审核片段")
-            return workflow.engineering_assessment(self.state.repository, run_id, context, references)
+            return workflow.engineering_assessment(self.state.repository, run_id, context, references,
+                                                   approval_review=payload.get("approval_review"))
         if path in {"/api/engineering-knowledge/preview", "/api/engineering-knowledge/index"}:
             self._engineering_knowledge_context(route)
             if path.endswith("/preview"):

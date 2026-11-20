@@ -856,6 +856,40 @@ class WorkflowTests(unittest.TestCase):
                         self.assertNotIn("EX-141", report)
                         self.request(self.knowledge_url(run_id, "/assessment"), {"references": []})
 
+    def test_approval_report_rechecks_withdrawal_in_another_partition(self):
+        self.login_as("engineering")
+        self.import_bom()
+        run_id = self.engineering_run()
+        route = lambda path: self.knowledge_url(run_id, path)
+
+        def approve(section, text):
+            preview = self.request(route("/preview") + "&kind=text", text.encode())
+            return self.request(route("/index"), {**preview, "section": section, "approved": True})["source_id"]
+
+        approve("changes", "正式签发批件 AN-14 批准 KM-17 的 LOT-68 在常规线换版生产，自 2039 年 9 月 1 日生效。"
+                           "有效至 2039 年 9 月 30 日当日结束。")
+        approve("changes", "审批档案岗确认 AN-14 对 KM-17 的 LOT-68 常规线换版的效力档案覆盖至 2039 年 9 月 15 日。")
+        scope = {"approval_id": "AN-14", "material_id": "KM-17", "batch_id": "LOT-68",
+                 "line": "常规线", "as_of": "2039-09-15"}
+        review = self.request(route("/references"), {"section": "changes", "approval_scope": scope})["approval"]
+        self.assertEqual(review["state"], "适用")
+        self.request(route("/assessment"), {"references": [], "approval_review": {
+            "claim": review["claim"], "section": review["section"],
+        }})
+        withdrawn = approve("validation", "正式撤回单 WV-29 从 2039 年 9 月 14 日零时起撤回 AN-14 对 KM-17 "
+                                         "的 LOT-68 在常规线换版的授权。")
+        updated = self.request(route("/assessment"), method="GET")["approval"]
+        self.assertEqual(updated["state"], "不适用")
+        self.assertFalse(updated["support"])
+        self.assertEqual([hit["source_id"] for hit in updated["exclusion"]], [withdrawn])
+        preview = self.request(route("/references"), {"section": "changes", "approval_scope": scope})
+        self.assertEqual(preview["approval"], updated)
+        self.assertNotIn(withdrawn, [hit["source_id"] for hit in preview["matches"]])
+        report = self.request(route("/report.md"), method="GET").split("### 审批效力核查", 1)[1]
+        self.assertIn("结论 · 不适用", report)
+        self.assertIn("排除依据 ·", report)
+        self.assertNotIn("支持依据 ·", report)
+
     def test_ordinary_role_facts_use_the_existing_rule_result(self):
         self.request("/api/demo")
         question = "2026-08-01 删除 COMP-001"

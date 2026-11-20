@@ -516,6 +516,20 @@
               <label>工程问题<input id="knowledge-query" maxlength="240" placeholder="留空时按本次变更检索"></label>
             </div>
             <button class="button secondary" type="button" id="engineering-knowledge-search">检索工程知识</button>
+            <details>
+              <summary>按审批范围自动推荐</summary>
+              <form id="knowledge-approval-scope">
+                <p class="muted">核查指定批件是否适用于常规换版生产。</p>
+                <div class="field-grid">
+                  <label>审批编号<input name="approval_id" maxlength="60" required></label>
+                  <label>待核物料<input name="material_id" maxlength="60" required></label>
+                  <label>查询日期<input name="as_of" type="date" required></label>
+                  <label>产线<input name="line" maxlength="40" required></label>
+                  <label>批次<input name="batch_id" maxlength="60"></label>
+                </div>
+                <button class="button secondary" type="submit">按范围查找审批材料</button>
+              </form>
+            </details>
             <div id="engineering-knowledge-references" aria-live="polite"></div>
             <details id="knowledge-catalog"><summary>已入库材料</summary>
               <p class="muted" id="workflow-library">读取知识库…</p>

@@ -291,3 +291,45 @@ def retrieve(repository, query, section="", *, context_query=False):
                 matches = combined[:3]
     return {"status": "retrieved" if matches else "no_match" if populated else "empty",
             "method": method(repository), "matches": matches}
+
+
+def approval_material(repository, approval_id, query, section=""):
+    """Find the approved documents linked by exact approval number.
+
+    Scope by source in this stage. Read complete related sources for the
+    decision, including continuation paragraphs and linked effectivity records.
+    """
+    if not isinstance(section, str) or (section and section not in SECTIONS):
+        raise ValueError("检索分区无效")
+    with _store(repository) as db:
+        index = getattr(repository, "semantic_index", None)
+        if index is not None:
+            db.execute("BEGIN IMMEDIATE")
+        db.create_function("title_mentions_approval", 1, lambda title: int(approval_id.casefold() in vector(title)),
+                           deterministic=True)
+        rows = list(db.execute("""
+            SELECT d.digest,d.kind,d.section,d.title,c.unit,c.part,c.text
+            FROM documents d JOIN chunks c ON d.digest=c.digest
+            WHERE title_mentions_approval(d.title) OR EXISTS (
+                SELECT 1 FROM chunks linked JOIN postings p ON p.chunk=linked.id
+                WHERE linked.digest=d.digest AND p.term=?
+            )
+            ORDER BY d.digest,c.unit,c.part
+        """, (approval_id.casefold(),)))
+        terms = vector(query)
+        def score(row):
+            return sum(weight * terms.get(term, 0) for term, weight in vector(row[6]).items())
+
+        # The visible preview may be filtered by section. Other approved
+        # sections can still contain authoritative withdrawal or archive records.
+        visible = [row for row in rows if not section or row[2] == section]
+        keyword = sorted(visible, key=score, reverse=True)[:3]
+        semantic = index.sync_and_search(db, query, section, document_digests={row[0] for row in visible}) if index else []
+        ranked = list(dict.fromkeys([row for row, _ in semantic] + keyword))[:3]
+    return {
+        "related": [_reference(*row) for row in rows],
+        "matches": [_reference(*row) for row in ranked],
+        "ranking": "bge" if semantic else "keyword" if rows else "no_related_source",
+        "status": "retrieved" if rows else "no_match",
+        "method": method(repository),
+    }
