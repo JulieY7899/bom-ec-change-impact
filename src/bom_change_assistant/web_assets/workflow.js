@@ -240,6 +240,7 @@ function setupEngineeringKnowledge(post, element) {
   const search = $("#engineering-knowledge-search");
   const filter = $("#knowledge-filter");
   const question = $("#knowledge-query");
+  const approvalScope = $("#knowledge-approval-scope");
   const section = $("#knowledge-section");
   const assessmentPanel = $("#engineering-assessment");
   const assessmentBody = $("#engineering-assessment-body");
@@ -255,20 +256,48 @@ function setupEngineeringKnowledge(post, element) {
     search.disabled = false;
   }
   question.addEventListener("input", clearSearch);
+  approvalScope.addEventListener("input", clearSearch);
   filter.addEventListener("change", clearSearch);
   let activeId = "";
   let preview = null;
 
   const endpoint = (path, id) => "/api/engineering-knowledge" + path + "?analysis_id=" + encodeURIComponent(id);
 
+  function renderApproval(host, review, showMaterials = false) {
+    const claim = review.claim;
+    host.append(element("h3", "审批效力核查 · " + review.state),
+      element("p", [claim.approval_id, claim.material_id, claim.operation, claim.line, claim.as_of,
+        claim.batch_id || "批次未指定"].join(" · ")),
+      element("p", review.reason));
+    if (review.missing) host.append(element("p", "待确认 · " + review.missing));
+    if (showMaterials) {
+      host.append(element("h4", "找到的相关材料"));
+      for (const material of review.materials) {
+        host.append(element("p", [material.section_label, material.title, material.source_id].join(" · ")));
+      }
+      if (!review.materials.length) host.append(element("p", "未找到与目标审批编号关联的材料。"));
+    }
+    for (const [key, label] of [["support", "支持依据"], ["exclusion", "排除依据"], ["facts", "已核实事实与关联记录"]]) {
+      for (const hit of review[key]) {
+        const unit = hit.kind === "text" ? "段" : "页";
+        const position = "第 " + hit.slide + " " + unit + " · 片段 " + hit.chunk;
+        const block = element("div", "");
+        block.className = "workflow-excerpt";
+        block.append(element("strong", [label, hit.title, hit.source_id, position].join(" · ")), element("p", hit.text));
+        host.append(block);
+      }
+    }
+  }
+
   function renderAssessment(data) {
-    const visible = Boolean(data?.findings.length || data?.notice);
+    const visible = Boolean(data?.findings.length || data?.notice || data?.approval);
     for (const host of [assessmentBody, reportAssessment]) {
       host.replaceChildren();
       if (!visible) continue;
       host.append(element("h2", data.title), element("p", "核查范围 · " + data.scope));
       for (const fact of data.facts) host.append(element("p", "规则依据 · " + fact));
       if (data.notice) host.append(element("p", data.notice));
+      if (data.approval) renderApproval(host, data.approval);
       for (const item of data.findings) {
         const block = document.createElement("div");
         block.className = "workflow-excerpt";
@@ -285,7 +314,7 @@ function setupEngineeringKnowledge(post, element) {
       && state.result?.analysis_id === id && state.result?.engineering_knowledge_available;
   }
 
-  async function updateAssessment(selected) {
+  async function updateAssessment(selected, approvalReview) {
     const id = state.result?.analysis_id;
     if (!id || !state.result.engineering_knowledge_available) return;
     const revision = ++assessmentRevision;
@@ -293,11 +322,11 @@ function setupEngineeringKnowledge(post, element) {
     const url = endpoint("/assessment", id);
     if (!selected) renderAssessment();
     try {
-      const data = selected ? await post(url, {references: selected}) : await api(url);
+      const data = selected ? await post(url, {references: selected, approval_review: approvalReview}) : await api(url);
       if (!assessmentCurrent(id, revision, accountRevision)) return;
       renderAssessment(data);
       if (selected) {
-        if (selected.length) {
+        if (selected.length || approvalReview) {
           assessmentPanel.scrollIntoView({block: "nearest"});
           toast("已更新本次工程推论和报告");
         } else {
@@ -325,6 +354,7 @@ function setupEngineeringKnowledge(post, element) {
     activeId = "";
     clearSearch();
     question.value = "";
+    approvalScope.reset();
     filter.value = "";
     panel.classList.add("hidden");
     panel.querySelector("details").open = false;
@@ -397,7 +427,7 @@ function setupEngineeringKnowledge(post, element) {
   document.addEventListener("bom-snapshot-replaced", reset);
   document.addEventListener("bom-knowledge-denied", reset);
 
-  search.addEventListener("click", async () => {
+  async function findReferences(scope) {
     const id = activeId;
     const revision = libraryRevision;
     const request = ++searchRevision;
@@ -405,10 +435,22 @@ function setupEngineeringKnowledge(post, element) {
     references.textContent = "正在检索已审核的工程知识…";
     try {
       const url = endpoint("/references", id);
-      const query = question.value.trim();
-      const data = query || filter.value ? await post(url, {query, section: filter.value}) : await api(url);
+      const query = scope ? "" : question.value.trim();
+      const data = query || filter.value || scope
+        ? await post(url, {query, section: filter.value, approval_scope: scope}) : await api(url);
       if (!isCurrent(id, revision) || request !== searchRevision) return;
       references.replaceChildren();
+      if (data.approval) {
+        renderApproval(references, data.approval, true);
+        const apply = element("button", "将审批核查结果加入报告");
+        apply.className = "button secondary";
+        apply.type = "button";
+        apply.addEventListener("click", () => updateAssessment([], {
+          claim: data.approval.claim, section: data.approval.section,
+        }));
+        references.append(apply);
+        return;
+      }
       const choices = [];
       const apply = element("button", "将选中片段用于本次推论和报告");
       apply.className = "button secondary";
@@ -446,6 +488,12 @@ function setupEngineeringKnowledge(post, element) {
     } finally {
       if (request === searchRevision) search.disabled = false;
     }
+  }
+
+  search.addEventListener("click", () => findReferences());
+  approvalScope.addEventListener("submit", event => {
+    event.preventDefault();
+    findReferences(Object.fromEntries(new FormData(approvalScope)));
   });
 
   function clearPreview() {

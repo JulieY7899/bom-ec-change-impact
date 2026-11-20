@@ -65,7 +65,7 @@ class SemanticIndex:
                                         cache_dir=str(self.path / "runtime"))
         return self.encoder.embed(texts, batch_size=BATCH_SIZE)
 
-    def sync_and_search(self, db, query="", section="", *, required_evidence=None):
+    def sync_and_search(self, db, query="", section="", *, required_evidence=None, document_digests=None):
         """Caller holds the authoritative SQLite write lock through reconciliation and readback."""
         from qdrant_client import QdrantClient, models
 
@@ -104,9 +104,11 @@ class SemanticIndex:
             conditions = []
             if section:
                 conditions.append(models.FieldCondition(key="section", match=models.MatchValue(value=section)))
-            if required_evidence:
+            if required_evidence or document_digests is not None:
                 eligible = [key for key, row in approved.items()
-                            if (not section or section == row[2]) and required_evidence(row[6])]
+                            if (not section or section == row[2])
+                            and (document_digests is None or row[0] in document_digests)
+                            and (not required_evidence or required_evidence(row[6]))]
                 if not eligible:
                     return []
                 conditions.append(models.HasIdCondition(has_id=eligible))

@@ -7,7 +7,7 @@ import re
 import unicodedata
 from datetime import date
 
-from . import department_intent, engineering, knowledge, knowledge_store, procurement
+from . import approval, department_intent, engineering, knowledge, knowledge_store, procurement
 from .normalization import coerce_date, coerce_number
 from .roles import LABELS as ROLES
 
@@ -671,10 +671,24 @@ def engineering_context(repository, run_id):
     return context if context and context["role"] == "engineering" else None
 
 
-def engineering_references(repository, context, query="", section=""):
+def _approval_review(repository, claim, section):
+    result = knowledge_store.approval_material(repository, claim.approval_id, claim.search_text(), section)
+    related = result.pop("related")
+    materials = {hit["source_id"]: {key: hit[key] for key in ("source_id", "section_label", "title")}
+                 for hit in (*result["matches"], *related)}
+    return {**result, "approval": {**approval.assess(claim, related), "materials": list(materials.values()),
+                                   "section": section}}
+
+
+def engineering_references(repository, context, query="", section="", *, approval_scope=None):
     if not isinstance(query, str):
         raise ValueError("搜索问题须为文本")
+    if len(query) > 240:
+        raise ValueError("搜索问题最多 240 字")
     automatic = not query.strip()
+    claim = approval.Claim.confirmed(approval_scope) if automatic and approval_scope is not None else approval.Claim.from_question(query)
+    if claim:
+        return _approval_review(repository, claim, section)
     if automatic:
         draft = context["draft"]
         terms = [ENGINEERING_SEARCH_TERMS, *context["focus"], CHANGE_TYPES[draft["change_type"]]]
@@ -695,28 +709,39 @@ ASSESSMENT_RULES = (
 )
 
 
-def engineering_assessment(repository, run_id, context, references=None):
+def engineering_assessment(repository, run_id, context, references=None, *, approval_review=None):
     if references is not None:
         if (not isinstance(references, list) or len(references) > 3
                 or any(not isinstance(ref, str) or not REFERENCE_PATTERN.fullmatch(ref) for ref in references)
                 or len(set(references)) != len(references)):
             raise ValueError("请选择最多三个不同的已审核片段")
+    save = references is not None
     with repository.connect() as db:
-        if references is None:
+        if not save:
             row = db.execute("SELECT reference_json FROM engineering_assessments WHERE run_id=?", (run_id,)).fetchone()
-            references = json.loads(row[0]) if row else []
-            save = False
-        else:
-            save = True
+            saved = json.loads(row[0]) if row else []
+            if isinstance(saved, dict):
+                references, approval_review = saved["references"], saved["approval_review"]
+            else:
+                references = saved
+        review = None
+        if approval_review is not None:
+            if not isinstance(approval_review, dict) or references:
+                raise ValueError("请单独录用审批核查结果")
+            claim = approval.Claim.confirmed(approval_review.get("claim"))
+            selected_section = approval_review.get("section", "")
+            review = _approval_review(repository, claim, selected_section)["approval"]
+            approval_review = {"claim": claim.values(), "section": selected_section}
         hits = knowledge_store.resolve_references(repository, references)
         missing = len(references) - len(hits)
         if save:
             if missing:
                 raise ValueError("部分片段已重新审核，请重新检索后选择")
+            saved = {"references": references, "approval_review": approval_review} if review else references
             db.execute("""
                 INSERT INTO engineering_assessments VALUES (?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET reference_json=excluded.reference_json
-            """, (run_id, json.dumps(references)))
+            """, (run_id, json.dumps(saved)))
     findings = []
     for hit in hits:
         check = next((action for pattern, action in ASSESSMENT_RULES
@@ -734,7 +759,11 @@ def engineering_assessment(repository, run_id, context, references=None):
     run = get_run(repository, run_id)
     notice = f"{missing} 条片段已变更或撤回，请重新选择。" if missing else ""
     return {"title": ASSESSMENT_TITLE, "scope": scope,
-            "facts": run["answer"]["facts"][:2], "findings": findings, "notice": notice}
+            "facts": run["answer"]["facts"][:2], "findings": findings, "notice": notice,
+            **({"approval": review} if review else {})}
+
+
+APPROVAL_EVIDENCE_LABELS = {"support": "支持依据", "exclusion": "排除依据", "facts": "已核实事实与关联记录"}
 
 
 def engineering_report(base_report, assessment):
@@ -747,4 +776,23 @@ def engineering_report(base_report, assessment):
         excerpt = " ".join(item["excerpt"].split())
         lines += ["", f'- 工程依据 · {_report_text(item["citation"])}',
                   f"  - 摘录 · {_report_text(excerpt)}", f'  - 待复核 · {item["review"]}']
+    if review := assessment.get("approval"):
+        claim = review["claim"]
+        scope = [claim["approval_id"], claim["material_id"], claim["operation"], claim["line"],
+                 claim["as_of"], claim["batch_id"] or "批次未指定"]
+        lines += ["", "### 审批效力核查", "",
+                  f'- 待核主张 · {_report_text(" · ".join(scope))}',
+                  f'- 结论 · {review["state"]}', f'- 理由 · {review["reason"]}']
+        if review["missing"]:
+            lines.append(f'- 待确认 · {review["missing"]}')
+        for material in review["materials"]:
+            label = " · ".join((material["section_label"], material["title"], material["source_id"]))
+            lines.append(f'- 找到的材料 · {_report_text(label)}')
+        for role, label in APPROVAL_EVIDENCE_LABELS.items():
+            for hit in review[role]:
+                unit = "段" if hit["kind"] == "text" else "页"
+                position = f'第 {hit["slide"]} {unit} · 片段 {hit["chunk"]}'
+                citation = " · ".join((hit["section_label"], hit["title"], hit["source_id"], position))
+                excerpt = " ".join(hit["text"].split())
+                lines += [f'- {label} · {_report_text(citation)}', f'  - 摘录 · {_report_text(excerpt)}']
     return base_report.rstrip() + "\n".join(lines) + "\n"
