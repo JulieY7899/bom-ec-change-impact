@@ -272,6 +272,23 @@ class ProcedureApplicabilityTests(unittest.TestCase):
         controlled = evidence_requirement("JR-311 正式指导书正文规定把套帽交给哪个岗位？")
         self.assertTrue(controlled("套帽回运指导书 JR-311 的受控版本覆盖全部装配线。拆下后放入回运盒，再交仓管岗。"))
 
+    def test_scoped_procedure_keeps_operation_order_and_plant_scope(self):
+        qualifies = evidence_requirement("找允许常规装配设施先标记后做密封检查的干装规程。")
+        self.assertTrue(qualifies("现行干装规程规定，常规装配线先标记再做密封检查。"))
+        self.assertFalse(qualifies("现行干装规程规定，常规装配线先做密封检查再标记。"))
+        self.assertFalse(qualifies("干装规程规定先标记再做密封检查，该规定仅限验证线。"))
+        self.assertFalse(qualifies("现行干装规程禁止先标记后做密封检查。"))
+
+    def test_exception_is_evidence_only_for_its_requested_scope(self):
+        authorizes = "现行返库规程规定，两人核签。发生终端离线时，主管授权后该批可由单人核签。"
+        asks_exception = evidence_requirement("现行返库规程有哪些条件允许离线时单人核签？")
+        asks_general = evidence_requirement("找系统正常时默认由单人核签返库的常规规程。")
+        self.assertTrue(asks_exception(authorizes))
+        self.assertFalse(asks_general(authorizes))
+        asks_batch = evidence_requirement("找工单 WX-469 的单批授权，潮封后只称一次怎样转入压合？")
+        self.assertTrue(asks_batch("工单 WX-469 单批偏离授权：仅该批以第一次称重记录将潮封件转入压合。"))
+        self.assertFalse(asks_batch("工单 WX-460 单批偏离授权：仅该批以第一次称重记录将潮封件转入压合。"))
+
     def test_procedure_requires_the_requested_override_and_general_scope(self):
         qualifies = evidence_requirement("找允许换卷后操作岗替代复核岗复查定位叉的通用规程。")
         self.assertFalse(qualifies("已发布的换卷规程规定，换卷结束后必须由复核岗检查定位叉。"))

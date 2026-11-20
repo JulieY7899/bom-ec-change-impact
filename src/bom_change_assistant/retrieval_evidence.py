@@ -131,12 +131,14 @@ RECORD_TYPES = (
 )
 PROCEDURE_TEXT = re.compile(r"规程|作业标准|指导书|规范")
 PROCEDURE_REQUEST = re.compile(
-    rf"(?:通用|正式|现行|双签).{{0,12}}(?:{PROCEDURE_TEXT.pattern})"
+    rf"(?:通用|正式|现行|常规|双签|干装|返库|交班).{{0,12}}(?:{PROCEDURE_TEXT.pattern})"
     rf"|(?:{PROCEDURE_TEXT.pattern})(?:的)?(?:正式)?正文"
+    rf"|(?:适用的?|仍有效[^。！？]{{0,55}})(?:{PROCEDURE_TEXT.pattern})"
+    r"|(?:交班|交接|复查).{0,12}正式条款"
 )
 PROCEDURE_CONTINUATION = re.compile(r"(?:步骤|规程|条文).{0,4}(?:续条|续页)|续(?:条|页).{0,6}(?:规定|要求)")
 PROCEDURE_CONTROLLED = re.compile(r"已(?:受控)?(?:发布|签发|生效)|(?:受控|现行)版本|已发版")
-PROCEDURE_DIRECTIVE = re.compile(r"要求|规定|允许|必须|应当|不得|须|方可|才可|禁止|每(?:隔|班|日|次)")
+PROCEDURE_DIRECTIVE = re.compile(r"要求|规定|允许|必须|应当|不得|须|方可|才可|禁止|仅(?:当|在)|每(?:隔|班|日|次)")
 PROCEDURE_STEP = re.compile(r"放入|移入|交(?:给|由)|再交|核对|检查|确认|复核|登记|通知")
 PROCEDURE_ROLE_REQUEST = re.compile(r"谁|哪(?:一|个)?岗|哪个(?:人员|角色)")
 PROCEDURE_ROLE = re.compile(r"岗位|岗|[班组线]长|领班|主管|(?:检验|质量|操作|维护|维修|管理)员|责任人|工程师")
@@ -145,13 +147,16 @@ PROCEDURE_VISUAL_ID = re.compile(r"[红黄绿蓝橙白黑](?:色)?(?:状态)?(?:
 PROCEDURE_UNCONTROLLED = re.compile(
     r"拟稿|草案|(?:征求|试征)意见|未(?:受控|正式)?发布|未签发现行规程|已废止"
     r"|只限本次|仅限(?:该|此|本)(?:次|批|工单)|一次性(?:偏差|作业规程|许可|授权|处置|指令)"
-    r"|单次处置|不得推广|临时(?:处置|通知)"
+    r"|单次处置|不得推广|临时(?:处置|通知)|已(?:停用|废弃)|征询"
+    r"|单(?:件|批)偏离|返工复盘|交班演练|模拟评审|档案附件"
     r"|仅供展示|演示附页|仅为培训|仅限.{0,8}模型|(?:目录|索引).{0,24}(?:规程|条文|题名)|(?:未附|缺少).{0,8}正文|正文未附"
 )
 PROCEDURE_TOPICS = (
     r"清场", r"双签|双人签署", r"软(?:质)?护套", r"双层(?:式)?托盘", r"跨班",
     r"封样桶", r"量块", r"复机", r"首件", r"巡检", r"入库",
     r"换卷", r"定位叉", r"检具", r"热封线",
+    r"导通复查", r"潮封", r"压合", r"定位块", r"连续生产", r"二次渗漏",
+    r"封签|签封", r"交班|转交下一班|交下一班", r"干装", r"密封检查", r"返库",
 )
 LEAKAGE_RATE = r"(?:最大(?:允许)?)?泄漏率"
 LEAKAGE_BOUND = re.compile(
@@ -644,6 +649,23 @@ def _quantitative_requirement(query):
     return qualifies
 
 
+PROCEDURE_RECORD_ALIAS = re.compile(r"[甲乙丙丁戊己庚辛壬癸]号(?:程序文件|工单)")
+LOCAL_DEVIATION_REQUEST = re.compile(r"单(?:批|件|次)(?:偏离|授权|例外|批准)")
+LOCAL_DEVIATION_RECORD = re.compile(r"(?:单(?:批|件|次)|(?:该|此|本)(?:批|工单)).{0,24}(?:偏离|授权|特准|批准)")
+PROCEDURE_OPERATIONS = (
+    (r"原返工人员.{0,10}(?:自己|自行|复查)", r"原返工人员.{0,14}(?:自行|复查)"),
+    (r"只称一次|只称一遍|仅称一次|一次称重", r"(?:只|仅)称(?:重)?一次|一次称重|以第一次称重(?:记录)?"),
+    (r"操作员自检单", r"(?:凭|依据|按)操作员自检单"),
+    (r"自行补写封签", r"(?:自行|自己)补(?:写|录)封签"),
+    (r"先标记后(?:做)?密封检查", r"先(?:做)?标记.{0,8}(?:再|后)(?:做)?密封检查"),
+    (r"(?:单人|一人)核签", r"(?:单人|一人)核签"),
+)
+PROCEDURE_EXCEPTION = re.compile(r"发生.{0,16}(?:离线|故障)时|仅当|只有在|例外(?:情况)?")
+IN_FORCE_PROCEDURE = re.compile(
+    rf"(?:从|自)\s*({FULL_DATE})\s*(?:起|开始)?(?:施行|执行|生效|启用)"
+)
+
+
 def _procedure_requirement(query, references):
     topics = [topic for topic in PROCEDURE_TOPICS if re.search(topic, query)]
     requested_overrides = []
@@ -651,6 +673,12 @@ def _procedure_requirement(query, references):
         requested_overrides = [action for action in PROCEDURE_OVERRIDE if re.search(action, query)]
     visual_ids = {mark.replace("色", "") for mark in PROCEDURE_VISUAL_ID.findall(query)}
     needs_role = PROCEDURE_ROLE_REQUEST.search(query)
+    aliases = set(PROCEDURE_RECORD_ALIAS.findall(query))
+    operations = [supports for requested, supports in PROCEDURE_OPERATIONS if re.search(requested, query)]
+    asks_general = bool(re.search(r"默认|每批|常规|所有|通用|一律", query))
+    production = bool(re.search(r"常规(?:装配|生产|线)|所有.{0,8}装配设施", query))
+    requested_date = re.search(FULL_DATE, query)
+    requested_day = _calendar_date(requested_date[0]) if requested_date else None
 
     def qualifies(sentences):
         if PROCEDURE_UNCONTROLLED.search(" ".join(sentences)):
@@ -671,9 +699,21 @@ def _procedure_requirement(query, references):
                 continue
             if needs_role and not PROCEDURE_ROLE.search(rule):
                 continue
-            if not references.issubset(PART_CODE.findall(rule)):
+            if not references.issubset(PART_CODE.findall(rule)) or not aliases.issubset(PROCEDURE_RECORD_ALIAS.findall(rule)):
                 continue
             if not all(re.search(topic, rule) for topic in topics):
+                continue
+            if production and re.search(r"验证线|模拟设施|仅限验证|限验证区", rule):
+                continue
+            start = IN_FORCE_PROCEDURE.search(rule)
+            if requested_day and start and (effective := _calendar_date(start[1])) and effective > requested_day:
+                continue
+            operative_rule = PROCEDURE_EXCEPTION.split(rule, maxsplit=1)[0] if asks_general else rule
+            if not all(
+                re.search(operation, operative_rule)
+                and not re.search(rf"(?:禁止|不得|不允许|不可).{{0,16}}(?:{operation})", operative_rule)
+                for operation in operations
+            ):
                 continue
             if all(re.search(rf"(?:允许|可以|可由|准许).{{0,32}}(?:{action})", rule)
                    and not re.search(rf"(?:禁止|不得|不允许|不可).{{0,20}}(?:{action})", rule)
@@ -732,6 +772,22 @@ def _formal_requirements(query, quantitative=None):
             checks.append(issued)
     if PROCEDURE_REQUEST.search(query):
         checks.append(_procedure_requirement(query, references))
+    elif LOCAL_DEVIATION_REQUEST.search(query) and ("工单" in query or references):
+        aliases = set(PROCEDURE_RECORD_ALIAS.findall(query))
+        topics = [topic for topic in PROCEDURE_TOPICS if re.search(topic, query)]
+        operations = [supports for requested, supports in PROCEDURE_OPERATIONS if re.search(requested, query)]
+
+        def local_deviation(sentences):
+            return any(
+                LOCAL_DEVIATION_RECORD.search(sentence) and re.search(r"授权|特准|批准|准许", sentence)
+                and not RECORD_PENDING.search(sentence)
+                and references.issubset(PART_CODE.findall(sentence))
+                and aliases.issubset(PROCEDURE_RECORD_ALIAS.findall(sentence))
+                and all(re.search(p, sentence) for p in topics + operations)
+                for sentence in sentences
+            )
+
+        checks.append(local_deviation)
     if not quantitative and re.search(LEAKAGE_RATE, query) and re.search(r"最大|上限|限值|判退", query):
         checks.append(lambda sentences: any(
             LEAKAGE_BOUND.search(sentence) and not RECORD_PENDING.search(sentence)
