@@ -192,6 +192,38 @@ class ApprovalEffectivityTests(unittest.TestCase):
         before = withdrawn_authorization_filter("2040-05-09 BX-427 仍批准 PC-690 投用吗？")
         self.assertFalse(before("2040-05-10 的撤回通知将 PC-690 从 BX-427 批准范围中删除。"))
 
+    def test_approval_effective_date_is_distinct_from_issue_date(self):
+        evidence = (
+            "放行批件 AX-480 批准滑座 SD-29 在常规线换版。"
+            "签发日为2036年8月3日，自2036年8月7日零时生效。"
+        )
+        on_time = evidence_requirement("2036年8月7日滑座 SD-29 常规生产换版的有效批件 AX-480 在哪？")
+        too_early = evidence_requirement("2036年8月6日滑座 SD-29 常规生产换版的有效批件 AX-480 在哪？")
+        self.assertTrue(on_time(evidence))
+        self.assertFalse(too_early(evidence))
+        self.assertFalse(on_time(evidence.replace("SD-29", "SD-30")))
+
+    def test_future_withdrawal_and_partial_withdrawal_are_scoped(self):
+        from bom_change_assistant.retrieval_evidence import withdrawn_authorization_filter
+
+        notice = "调整单于2036年8月3日签发，AX-480 的 SD-29 从2036年8月7日零时撤回。"
+        before = withdrawn_authorization_filter("2036年8月6日按 AX-480 常规生产 SD-29 的有效批准？")
+        after = withdrawn_authorization_filter("2036年8月7日按 AX-480 常规生产 SD-29 的有效批准？")
+        self.assertFalse(before(notice))
+        self.assertTrue(after(notice))
+        adjustment = "二〇三六年8月7日撤回甲组批次放行，乙组批次继续有效。"
+        removed = withdrawn_authorization_filter("二〇三六年8月7日甲组批次常规制造的有效放行？")
+        retained = withdrawn_authorization_filter("二〇三六年8月7日乙组批次常规制造的有效放行？")
+        self.assertTrue(removed(adjustment))
+        self.assertFalse(retained(adjustment))
+
+        notice = ("2036年8月7日授权范围调整单撤回滑座 SD-29 批次 LOT-227 的正式放行，"
+                  "SD-29 的 LOT-238 继续有效。")
+        after_removal = evidence_requirement("2036年8月7日 SD-29 的 LOT-227 范围调整后还能常规制造吗？")
+        after_retention = evidence_requirement("2036年8月7日 SD-29 的 LOT-238 范围调整后还能常规制造吗？")
+        self.assertFalse(after_removal(notice))
+        self.assertTrue(after_retention(notice))
+
     def test_production_record_is_distinct_from_a_trial(self):
         qualifies = evidence_requirement("BX-428 已批准 PC-691 投入连续流水线量产的记录在哪？")
         self.assertTrue(qualifies("PC-691 的量产放行单 BX-428 已正式签发。"))

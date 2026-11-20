@@ -199,7 +199,7 @@ EARLY_DEMAND = rf"需求(?:日期|日)(?:早于{CHANGE_DATE}|先于{CHANGE_DATE}
 STOCK_CATEGORIES = re.compile(r"待检|冻结|寄售")
 STOCK_RULE = re.compile(r"并入|计入|纳入|扣除|排除|算入|不算|不(?:可|能)用|方可使用")
 
-FULL_DATE = r"20[0-9]{2}\s*(?:年|[-/.])\s*[0-9]{1,2}\s*(?:月|[-/.])\s*[0-9]{1,2}(?:\s*日)?(?![0-9])"
+FULL_DATE = r"(?:20[0-9]{2}|二[〇零][〇零一二三四五六七八九]{2})\s*(?:年|[-/.])\s*[0-9]{1,2}\s*(?:月|[-/.])\s*[0-9]{1,2}(?:\s*日)?(?![0-9])"
 DATED_WINDOW = re.compile(rf"({FULL_DATE})\s*(?:至|到|~|—|–|－)\s*({FULL_DATE})")
 EFFECTIVE_START = re.compile(rf"(?:从|自)\s*({FULL_DATE})\s*(?:起|开始)?\s*(?:有效|生效)")
 EFFECTIVE_END = re.compile(rf"(?:至|到|截止于?|有效期至)\s*({FULL_DATE})(?:\s*(?:截止|结束|为止))?")
@@ -275,27 +275,137 @@ def _has_signed_cutover(text, sentences):
     )
 
 
+APPROVAL_SCOPE_ALIAS = re.compile(r"[甲乙丙丁戊己庚辛壬癸](?:号签件|组批次)")
+BATCH_REFERENCE = re.compile(
+    rf"{CODE_START}(?:lot|batch|bg)[-_]{CODE}{CODE_END}|[甲乙丙丁戊己庚辛壬癸]组批次"
+)
+APPROVAL_DATE_INTENT = re.compile(
+    r"撤回(?:的)?(?:起算|生效)日|范围调整后|生效确认单|生效日的批件|有效(?:批准|批件|放行)"
+    r"|(?:新|生效)批件|(?:试装|试制).{0,24}签发单"
+)
+AUTHORIZED_OPERATION = re.compile(r"换版|换装|切换|换产|投用|启用|试装|试制|制造|生产|生效|放行|继续有效")
+AUTHORIZATION_RECORD = re.compile(r"批件|签件|签发单|批准单|放行单|确认单|授权范围调整单")
+AUTHORIZATION_GRANT = re.compile(r"批准|准予|同意|已签发|许可|授权|确认单|继续有效|仍可凭")
+AUTHORIZATION_NONOPERATIVE = re.compile(
+    r"签到|宣贯|预装|台账|库存记录|追溯索引|排期|排产|拟提交|仅作|复检|完成.{0,8}试装"
+)
+AUTHORIZATION_START = re.compile(
+    rf"(?:从|自)\s*({FULL_DATE})\s*(?:零时|当日|当天|起|开始|正式)*"
+    r"(?:有效|生效|启用|实施|投用|切换)"
+)
+WITHDRAWAL_START = re.compile(
+    rf"(?:从|自|于)\s*({FULL_DATE})\s*(?:零时|当日|当天|起|开始)*(?:正式)?(?:撤回|撤销|作废)"
+)
+
+
+def _references(text):
+    return set(PART_CODE.findall(text)) | set(APPROVAL_SCOPE_ALIAS.findall(text))
+
+
+def _withdrawal_date(clause):
+    if effective := WITHDRAWAL_START.search(clause):
+        return _calendar_date(effective[1])
+    day = re.search(FULL_DATE, clause)
+    return _calendar_date(day[0]) if day else None
+
+
+def _dated_authorization(query):
+    day = re.search(FULL_DATE, query)
+    requested = _calendar_date(day[0]) if day else None
+    if not (requested and APPROVAL_DATE_INTENT.search(query)):
+        return None
+    # Existing date-window records and formal signatures retain their specific checks.
+    if not re.search(r"撤回起算日|范围调整后|生效确认单|换版|常规(?:装配|生产|线|制造)|正式制造|批量切换|试装|新批件|编号正式切换", query):
+        return None
+    references = _references(query)
+    asks_boundary = "撤回起算日" in query
+    asks_adjustment = "范围调整后" in query
+    adjusted_scope = set(BATCH_REFERENCE.findall(query)) or references
+    asks_confirmation = "生效确认单" in query
+    asks_mass = bool(re.search(r"批量|量产", query))
+    asks_trial = bool(re.search(r"样机|验证台|离线|台架", query) and re.search(r"试装|试制", query))
+    asks_new = bool(re.search(r"哪.{0,4}新批件", query))
+
+    def qualifies(text):
+        if not references.issubset(_references(text)):
+            return False
+        if AUTHORIZATION_NONOPERATIVE.search(text):
+            return False
+        sentences = SENTENCE.split(text)
+        if asks_boundary:
+            return any(
+                (effective := _withdrawal_date(s)) and effective > requested
+                and WITHDRAWAL.search(s) and references.issubset(_references(s))
+                for s in sentences
+            ) and any(
+                (stated := re.search(FULL_DATE, s)) and _calendar_date(stated[0]) == requested
+                and re.search(r"仍(?:可|有效)|继续有效", s) and AUTHORIZED_OPERATION.search(s)
+                for s in sentences
+            )
+        if re.search(r"作废|已废止|待.{0,16}后生效|等.{0,8}生效日", text):
+            return False
+        if asks_adjustment:
+            return any(
+                re.search(r"范围调整|缩小范围|部分撤", s)
+                and any(re.search(r"继续有效|保留.{0,8}授权", clause)
+                        and adjusted_scope.issubset(_references(clause))
+                        for clause in re.split(r"[，,]", s))
+                and (start := re.search(FULL_DATE, s)) and (effective := _calendar_date(start[0]))
+                and effective <= requested
+                for s in sentences
+            )
+        if asks_confirmation and "生效确认单" not in text:
+            return False
+        if asks_new and not re.search(r"新批件|重新签发|重新批准", text):
+            return False
+        if not asks_trial and re.search(r"(?:仅|只).{0,20}(?:试装|试制|台架)|须.{0,8}独立批件", text):
+            return False
+        if asks_trial and not re.search(r"试装|试制", text):
+            return False
+        if asks_mass and not any(AUTHORIZATION_GRANT.search(s) and re.search(r"批量|量产", s) for s in sentences):
+            return False
+        if not (AUTHORIZATION_RECORD.search(text) and AUTHORIZATION_GRANT.search(text)
+                and AUTHORIZED_OPERATION.search(text)):
+            return False
+        start = AUTHORIZATION_START.search(text)
+        if start:
+            effective = _calendar_date(start[1])
+            return bool(effective and effective <= requested)
+        return any(
+            (date_in_sentence := re.search(FULL_DATE, s)) and "自该日生效" in s
+            and (effective := _calendar_date(date_in_sentence[0])) and effective <= requested
+            for s in sentences
+        )
+
+    return qualifies
+
+
 def withdrawn_authorization_filter(query):
     """Identify a scoped withdrawal when looking for authorization that is still valid."""
     query = unicodedata.normalize("NFKC", query).casefold()
-    references = set(PART_CODE.findall(query))
-    if (len(references) < 2 or not CURRENT_AUTHORIZATION.search(query)
-            or re.search(r"(?:撤回|撤销)前|历史批件|原始批件", query)):
+    references = _references(query)
+    dated = _dated_authorization(query)
+    if (not references or not (CURRENT_AUTHORIZATION.search(query) or dated)
+            or (len(references) < 2 and not dated)
+            or re.search(r"(?:撤回|撤销)前|撤回起算日|历史批件|原始批件|哪.{0,4}新批件|范围调整后", query)):
         return None
     day = re.search(FULL_DATE, query)
     requested_day = _calendar_date(day[0]) if day else None
 
     def withdraws(text):
         clauses = SENTENCE.split(unicodedata.normalize("NFKC", text).casefold())
-        return any(
-            references.issubset(PART_CODE.findall(clause))
-            and (WITHDRAWN_SCOPE.search(clause) or WITHDRAWAL.search(clause))
-            and not CONTINUING_AUTHORIZATION.search(clause)
-            and not re.search(r"拟撤|待撤|未撤|是否撤|可能撤", clause)
-            and not (requested_day and (effective := re.search(FULL_DATE, clause))
-                     and (withdrawn_day := _calendar_date(effective[0])) and withdrawn_day > requested_day)
-            for clause in clauses
-        )
+        for clause in clauses:
+            if not (WITHDRAWN_SCOPE.search(clause) or WITHDRAWAL.search(clause)):
+                continue
+            if re.search(r"拟撤|待撤|未撤|是否撤|可能撤", clause):
+                continue
+            if requested_day and (effective := _withdrawal_date(clause)) and effective > requested_day:
+                continue
+            # A scope reduction can withdraw one batch and retain another in the same sentence.
+            removed_scope = re.split(r"[，,](?=[^，,。]*?(?:继续有效|保持有效|保留))", clause, maxsplit=1)[0]
+            if references.issubset(_references(removed_scope)) and not CONTINUING_AUTHORIZATION.search(removed_scope):
+                return True
+        return False
 
     return withdraws
 
@@ -557,7 +667,8 @@ def _formal_requirements(query, quantitative=None):
 
 def _calendar_date(value):
     try:
-        return date(*map(int, re.findall(r"[0-9]+", value)))
+        normalized = value.translate(str.maketrans("〇零一二三四五六七八九", "00123456789"))
+        return date(*map(int, re.findall(r"[0-9]+", normalized)))
     except ValueError:
         return None
 
@@ -616,6 +727,8 @@ def evidence_requirement(query):
     """Build checks only for scope or evidence explicitly requested in the query."""
     original_query = unicodedata.normalize("NFKC", query)
     query = original_query.casefold()
+    if dated := _dated_authorization(query):
+        return lambda text: dated(unicodedata.normalize("NFKC", text).casefold())
     versions = set(VERSION.findall(query))
     rows = set(BOM_ROW.findall(query))
     named_plants = set(NAMED_PLANT.findall(query))
