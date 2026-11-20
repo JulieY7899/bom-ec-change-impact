@@ -241,7 +241,7 @@ def retrieve(repository, query, section="", *, context_query=False):
         filters = ["d.section=?"] if section else []
         scope = "WHERE " + " AND ".join(filters) if filters else ""
         populated = db.execute("SELECT 1 FROM documents d " + scope + " LIMIT 1", params).fetchone()
-        withdrawal = withdrawn_authorization_filter(query) if exact_only else None
+        withdrawal = None if context_query else withdrawn_authorization_filter(query)
         if withdrawal and any(
             withdrawal(text) for (text,) in db.execute(
                 "SELECT c.text FROM chunks c JOIN documents d ON d.digest=c.digest " + scope, params
