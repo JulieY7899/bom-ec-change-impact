@@ -212,3 +212,20 @@ class FormalBoundContextTests(unittest.TestCase):
         self.assertTrue(qualifies("LC-318 另列冷启动单次响应的上限：每次须在 180 ms 内响应。"))
         self.assertFalse(qualifies("LC-318 另列暖机后单次响应的上限：每次须在 180 ms 内响应。"))
         self.assertFalse(qualifies("LC-318 另列冷启动单次响应的上限：每次不得低于 180 ms。"))
+
+
+class ProcedureApplicabilityTests(unittest.TestCase):
+    def test_numbered_continuation_and_controlled_steps_are_evidence(self):
+        qualifies = evidence_requirement("GH-618 的规程正文，换卷结束后要谁拔出定位叉？")
+        self.assertTrue(qualifies("GH-618 的步骤续条规定，换卷结束后先由领班拔出定位叉。"))
+        self.assertFalse(qualifies("其他规程 GH-619 规定，换卷后由维护岗拔出定位叉。"))
+        self.assertFalse(qualifies("已发布的换卷规程 GH-618 规定，换卷时先检查定位叉方向。"))
+        controlled = evidence_requirement("JR-311 正式指导书正文规定把套帽交给哪个岗位？")
+        self.assertTrue(controlled("套帽回运指导书 JR-311 的受控版本覆盖全部装配线。拆下后放入回运盒，再交仓管岗。"))
+
+    def test_procedure_requires_the_requested_override_and_general_scope(self):
+        qualifies = evidence_requirement("找允许换卷后操作岗替代复核岗复查定位叉的通用规程。")
+        self.assertFalse(qualifies("已发布的换卷规程规定，换卷结束后必须由复核岗检查定位叉。"))
+        self.assertFalse(qualifies("换卷规程例外：单次处置允许某批操作岗替代复核岗检查定位叉。"))
+        self.assertFalse(qualifies("现行换卷规程禁止操作岗替代复核岗检查定位叉。"))
+        self.assertTrue(qualifies("现行换卷规程允许各生产班操作岗替代复核岗检查定位叉。"))
