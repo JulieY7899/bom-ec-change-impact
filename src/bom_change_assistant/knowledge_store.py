@@ -10,7 +10,7 @@ from collections import Counter
 from contextlib import closing, contextmanager
 from hashlib import sha256
 
-from .retrieval_evidence import evidence_requirement
+from .retrieval_evidence import evidence_requirement, withdrawn_authorization_filter
 
 SECTIONS = {"standards": "工程规范", "changes": "变更案例", "validation": "验证与判定", "unfiled": "待归类"}
 METHOD = "local-sparse-cosine-v2"
@@ -241,6 +241,13 @@ def retrieve(repository, query, section="", *, context_query=False):
         filters = ["d.section=?"] if section else []
         scope = "WHERE " + " AND ".join(filters) if filters else ""
         populated = db.execute("SELECT 1 FROM documents d " + scope + " LIMIT 1", params).fetchone()
+        withdrawal = withdrawn_authorization_filter(query) if exact_only else None
+        if withdrawal and any(
+            withdrawal(text) for (text,) in db.execute(
+                "SELECT c.text FROM chunks c JOIN documents d ON d.digest=c.digest " + scope, params
+            )
+        ):
+            return {"status": "no_match", "method": method(repository), "matches": []}
         if required_evidence:
             db.create_function("qualifies_as_evidence", 1, required_evidence, deterministic=True)
             filters.append("qualifies_as_evidence(c.text)")
