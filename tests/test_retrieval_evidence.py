@@ -175,3 +175,24 @@ class ProcedureTextTests(unittest.TestCase):
         ):
             with self.subTest(unsupported=unsupported):
                 self.assertFalse(qualifies(unsupported))
+
+
+class ApprovalEffectivityTests(unittest.TestCase):
+    def test_effectivity_can_follow_the_signed_record_in_a_separate_sentence(self):
+        qualifies = evidence_requirement("在 2040 年 5 月 28 日当天仍有效的 PC-690 锁舌更换批准是哪份？")
+        self.assertTrue(qualifies("PC-690 的更换批准 BX-427 已签发。有效期为 2040-05-01 至 2040-05-30。"))
+        self.assertFalse(qualifies("PC-690 的更换批准 BX-428 已签发。自 2040-06-01 起有效。"))
+
+    def test_withdrawal_is_scoped_to_the_record_object_and_effective_day(self):
+        from bom_change_assistant.retrieval_evidence import withdrawn_authorization_filter
+
+        withdraws = withdrawn_authorization_filter("BX-427 仍批准 PC-690 投用吗？")
+        self.assertTrue(withdraws("2040-05-10 的撤回通知将 PC-690 从 BX-427 批准范围中删除。"))
+        self.assertFalse(withdraws("2040-05-10 的撤回通知将 PC-691 从 BX-427 批准范围中删除。"))
+        before = withdrawn_authorization_filter("2040-05-09 BX-427 仍批准 PC-690 投用吗？")
+        self.assertFalse(before("2040-05-10 的撤回通知将 PC-690 从 BX-427 批准范围中删除。"))
+
+    def test_production_record_is_distinct_from_a_trial(self):
+        qualifies = evidence_requirement("BX-428 已批准 PC-691 投入连续流水线量产的记录在哪？")
+        self.assertTrue(qualifies("PC-691 的量产放行单 BX-428 已正式签发。"))
+        self.assertFalse(qualifies("BX-428 批准 PC-691 在台架完成量产样品试装。"))

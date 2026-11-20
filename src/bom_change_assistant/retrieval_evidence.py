@@ -95,9 +95,9 @@ CUTOVER_ISSUE = re.compile(r"切换(?:审批单|批准单|决定|签批).{0,24}�
 DECISION_REQUEST = re.compile(
     r"换型.{0,10}(?:决定|决议|审批)|(?:决定|决议|同意).{0,12}换型"
     r"|(?:联审|评审).{0,5}(?:结论|通过)|(?:同意|批准|准予).{0,24}(?:更换|换产|投用|开线)"
-    r"|(?:现行|仍有效|生效的).{0,10}批件|请提供.{0,12}批件"
+    r"|(?:现行|仍有效|生效的).{0,10}批件|请提供.{0,12}批件|签了什么变更"
 )
-DECISION_ACTION = re.compile(r"换型|切换|换产|投用|更换|启用")
+DECISION_ACTION = re.compile(r"换型|切换|换产|投用|更换|启用|换装|变更")
 DECISION_HEADER = re.compile(r"^(?:放行|换型|切换|投用)?(?:批件|审批单|决议|批准单|审批记录)")
 DECISION_FIELD = re.compile(r"^(?:结论|决定|审批状态|审批结论|决议)\s*[:：]\s*(?:同意|通过|批准|准予)")
 DECISION_APPROVED = re.compile(r"联审通过|签发|现行.{0,8}(?:批件|决议)|(?:同意|批准|准予)")
@@ -107,7 +107,18 @@ RECORD_SCOPE_BREAK = re.compile(r"[，,]\s*(?:另(?:一|有|案)|原(?:批件|�
 DECISION_NONAUTHORITATIVE = re.compile(
     r"仅.{0,12}(?:对比|对照|试装|台架|实验室)|留作|维持|未列|不适用|暂未产生|撤回|已取消|废止"
 )
-PRODUCTION = re.compile(r"批量(?:生产|换产|投产)|量产|正式投产")
+PRODUCTION = re.compile(r"批量(?:生产|换产|投产)|量产|正式投产|连续(?:生产线|流水线)")
+CURRENT_AUTHORIZATION = re.compile(r"仍(?:然)?(?:批准|授权|有效)|(?:撤回|撤销|撤批)后.{0,24}(?:投用|授权|批准)")
+WITHDRAWAL = re.compile(r"撤回|撤销|撤批|撤销授权")
+WITHDRAWN_SCOPE = re.compile(r"从.{0,35}(?:授权|批准)范围中(?:删除|剔除|移除)|不再(?:获准|授权|批准)")
+CONTINUING_AUTHORIZATION = re.compile(r"(?:继续|仍然?|保持)有效|(?:继续|仍然?)按.{0,30}投用")
+PRODUCTION_RECORD_QUERY = re.compile(r"量产放行(?:单|记录).{0,12}(?:签发|哪|编号)|(?:签发|批准|放行).{0,26}(?:量产|连续流水线)|(?:量产|连续流水线).{0,16}(?:签发|批准|放行)")
+PRODUCTION_ISSUE = re.compile(r"已(?:正式)?签发.{0,4}量产放行(?:单|记录)|(?:量产放行(?:单|记录)|投产批件).{0,45}已(?:正式)?签发|(?:已批准|批准|同意|获准).{0,24}(?:量产|正式投产|批量生产|批量换产)")
+TRIAL_ONLY = re.compile(r"台架|离线试制|试装|试用|不得.{0,8}(?:量产|生产线|流水线)|试验记录")
+CONDITION_QUERY = re.compile(r"前置条件|哪些条件|需满足什么条件|须满足什么条件")
+CONDITION_TEXT = re.compile(r"仅当|只有在|方可|才允许|前置条件")
+ACCEPTED_TEST_QUERY = re.compile(r"(?:复检|复验).{0,10}已(?:完成)?签认.{0,6}合格")
+ACCEPTED_TEST = re.compile(r"复(?:检|验).{0,20}已(?:完成)?签认.{0,18}(?:结论.{0,3})?合格")
 SIGNED_APPENDIX_QUERY = re.compile(r"签发.{0,16}(?:附页|附件)|(?:附页|附件).{0,16}签发")
 SIGNATURE_DETAIL_QUERY = re.compile(r"(?:会签|签署|签字).{0,4}(?:页号|页码|岗位)")
 SIGNATURE_ROLE = re.compile(r"(?:会签|签署|签字)(?:岗位|人)\s*[:：为]\s*(?!待|未|无|空)[^，,。]+")
@@ -180,7 +191,7 @@ DATED_WINDOW = re.compile(rf"({FULL_DATE})\s*(?:至|到|~|—|–|－)\s*({FULL_
 EFFECTIVE_START = re.compile(rf"(?:从|自)\s*({FULL_DATE})\s*(?:起|开始)?\s*(?:有效|生效)")
 EFFECTIVE_END = re.compile(rf"(?:至|到|截止于?|有效期至)\s*({FULL_DATE})(?:\s*(?:截止|结束|为止))?")
 EFFECTIVE_DAY = re.compile(rf"({FULL_DATE})\s*(?:当天|当日)\s*(?:仍)?有效")
-DATED_EVIDENCE_REQUEST = re.compile(r"(?:当天|当日)(?:仍)?有效|仍(?:在)?有效")
+DATED_EVIDENCE_REQUEST = re.compile(r"(?:当天|当日)(?:仍)?有效|仍(?:在)?有效|已(?:经)?(?:生效|有效)")
 ZERO = r"(?<![0-9.])(?:0(?:\.0+)?(?![0-9.])|零)"
 RECEIPT_ZERO_REQUEST = re.compile(rf"(?:{OPEN_RECEIPT.pattern}).{{0,18}}{ZERO}\s*(?:件|个|数量)")
 RECEIPT_ZERO_VALUE = re.compile(
@@ -251,8 +262,65 @@ def _has_signed_cutover(text, sentences):
     )
 
 
+def withdrawn_authorization_filter(query):
+    """Identify a scoped withdrawal when looking for authorization that is still valid."""
+    query = unicodedata.normalize("NFKC", query).casefold()
+    references = set(PART_CODE.findall(query))
+    if (len(references) < 2 or not CURRENT_AUTHORIZATION.search(query)
+            or re.search(r"(?:撤回|撤销)前|历史批件|原始批件", query)):
+        return None
+    day = re.search(FULL_DATE, query)
+    requested_day = _calendar_date(day[0]) if day else None
+
+    def withdraws(text):
+        clauses = SENTENCE.split(unicodedata.normalize("NFKC", text).casefold())
+        return any(
+            references.issubset(PART_CODE.findall(clause))
+            and (WITHDRAWN_SCOPE.search(clause) or WITHDRAWAL.search(clause))
+            and not CONTINUING_AUTHORIZATION.search(clause)
+            and not re.search(r"拟撤|待撤|未撤|是否撤|可能撤", clause)
+            and not (requested_day and (effective := re.search(FULL_DATE, clause))
+                     and (withdrawn_day := _calendar_date(effective[0])) and withdrawn_day > requested_day)
+            for clause in clauses
+        )
+
+    return withdraws
+
+
 def _decision_requirements(query, references):
     checks = []
+    if references and CURRENT_AUTHORIZATION.search(query):
+        checks.append(lambda sentences: any(
+            references.issubset(PART_CODE.findall(" ".join(sentences)))
+            and CONTINUING_AUTHORIZATION.search(sentence)
+            and not WITHDRAWN_SCOPE.search(sentence)
+            and set(PART_CODE.findall(sentence)).intersection(references)
+            for sentence in sentences
+        ) or not WITHDRAWAL.search(" ".join(sentences)) and any(
+            references.issubset(PART_CODE.findall(sentence)) and (ISSUED.search(sentence) or re.search(r"现行.{0,12}批件", sentence))
+            and not (RECORD_PENDING.search(sentence) or DECISION_NONAUTHORITATIVE.search(sentence))
+            for sentence in sentences
+        ))
+        if re.search(r"(?:撤回|撤销|撤批)后", query):
+            checks.append(lambda sentences: any(CONTINUING_AUTHORIZATION.search(s) for s in sentences))
+    if references and PRODUCTION_RECORD_QUERY.search(query) and not PROCEDURE_REQUEST.search(query):
+        checks.append(lambda sentences: any(
+            references.issubset(PART_CODE.findall(sentence)) and PRODUCTION_ISSUE.search(sentence)
+            and not (TRIAL_ONLY.search(sentence) or RECORD_PENDING.search(sentence))
+            for sentence in sentences
+        ))
+    if references and CONDITION_QUERY.search(query) and PRODUCTION.search(query):
+        checks.append(lambda sentences: (
+            any(ISSUED.search(s) and references.issubset(PART_CODE.findall(s))
+                and not RECORD_PENDING.search(s) for s in sentences)
+            and any(CONDITION_TEXT.search(s) and PRODUCTION.search(s) for s in sentences)
+        ))
+    if references and ACCEPTED_TEST_QUERY.search(query):
+        # The inspection result, rather than the conditional approval, establishes readiness.
+        checks.append(lambda sentences: any(
+            ACCEPTED_TEST.search(s) and not re.search(r"仅当|若|待|尚未|未签|不合格", s)
+            and references.issubset(PART_CODE.findall(s)) for s in sentences
+        ))
     if SIGNED_APPENDIX_QUERY.search(query):
         checks.append(lambda sentences: any(
             references.issubset(PART_CODE.findall(sentence)) and not RECORD_PENDING.search(sentence)
@@ -271,10 +339,10 @@ def _decision_requirements(query, references):
             and (not asks_page or any(SIGNATURE_PAGE.search(s) and not RECORD_PENDING.search(s) for s in sentences))
             and (not asks_role or any(SIGNATURE_ROLE.search(s) and not RECORD_PENDING.search(s) for s in sentences))
         ))
-    if DECISION_REQUEST.search(query) and (references or DECISION_SITE.search(query)):
+    if DECISION_REQUEST.search(query) and not CURRENT_AUTHORIZATION.search(query) and (references or DECISION_SITE.search(query)):
         sites = set(DECISION_SITE.findall(query))
         mass_production = PRODUCTION.search(query)
-        needs_time = re.search(r"几点|何时|开线时刻|哪天|时刻|时间", query)
+        needs_time = CUTOVER_DATE_REQUEST.search(query)
 
         def approve(sentences):
             # Keep table metadata with the decision. Commentary and superseded clauses
@@ -396,7 +464,9 @@ def _formal_requirements(query):
                 decision = DECISION_TRAILING.split(sentence, maxsplit=1)[0]
                 if RECORD_PENDING.search(decision) or not references.issubset(PART_CODE.findall(decision)):
                     continue
-                if not (CUTOVER_ISSUE.search(decision) or (APPROVED.search(decision) and "切换" in decision)):
+                if not (CUTOVER_ISSUE.search(decision) or (APPROVED.search(decision) and "切换" in decision)
+                        or (re.search(r"(?:批准|审批|签批).{0,30}已(?:正式)?签发", decision)
+                            and DECISION_ACTION.search(decision))):
                     continue
                 scope = OBJECT_SCOPE.search(decision)
                 if scope:
@@ -487,7 +557,10 @@ def _context_requirements(query):
         def date_matches(text, sentences):
             return bool(requested_day and any(
                 _valid_on(sentence, requested_day, identifiers)
-                for sentence in sentences
+                or (index > 0 and re.match(r"\s*(?:有效期|自|从)", sentence)
+                    and ISSUED.search(sentences[index - 1])
+                    and _valid_on(sentences[index - 1] + " " + sentence, requested_day, identifiers))
+                for index, sentence in enumerate(sentences)
             ))
 
         checks.append(date_matches)
